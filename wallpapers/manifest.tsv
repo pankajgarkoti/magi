@@ -1,0 +1,15 @@
+# MAGI wallpaper manifest. Images are NOT in this repo: install.sh downloads each one from its
+# source at install time and checks its sha256. Copyright stays with the original artists;
+# see each Wallhaven page for the artist and source.
+# file<TAB>sha256<TAB>download url<TAB>source page
+wallhaven-21ozq6.jpg	273ef8e8fbaa8639c8e3e5f0011b9380100c33ef50f9dad1fbf752153be2d0e7	https://w.wallhaven.cc/full/21/wallhaven-21ozq6.jpg	https://wallhaven.cc/w/21ozq6
+wallhaven-3qwqld.png	f3854e925296676740c3bf0b0fcafbcaecbcac7323d42eb3be25c99bdea16f58	https://w.wallhaven.cc/full/3q/wallhaven-3qwqld.png	https://wallhaven.cc/w/3qwqld
+wallhaven-8gkx2k.jpg	28469395701dd4c11837772e2cbf7211b9ec2aec7161db08db68e03a281c290f	https://w.wallhaven.cc/full/8g/wallhaven-8gkx2k.jpg	https://wallhaven.cc/w/8gkx2k
+wallhaven-d8dmdj.png	7a651001c9001c64b5bb1544696890ba5ffd48ef7462a31dc5a1f4d959a25814	https://w.wallhaven.cc/full/d8/wallhaven-d8dmdj.png	https://wallhaven.cc/w/d8dmdj
+wallhaven-jed675.png	b5984c975cda9c021f1144e8b8e0d4e1baa151c0dc6f710235567c140adf53a5	https://w.wallhaven.cc/full/je/wallhaven-jed675.png	https://wallhaven.cc/w/jed675
+wallhaven-lyd7oy.png	72687823163ecf191ceeb1198a6547c04a9f843a4f4c9b8ac25a61e667291359	https://w.wallhaven.cc/full/ly/wallhaven-lyd7oy.png	https://wallhaven.cc/w/lyd7oy
+wallhaven-lyg3ol.png	35d58dd288f5f7beb38973ddd34186961db3ef33a8e4e09e0fb01e08593c4840	https://w.wallhaven.cc/full/ly/wallhaven-lyg3ol.png	https://wallhaven.cc/w/lyg3ol
+wallhaven-lyjzxp.jpg	cd4cdc7f240ba64f4f070333a0f38c1cdd98caa8737d9fbac135a0c0e2714997	https://w.wallhaven.cc/full/ly/wallhaven-lyjzxp.jpg	https://wallhaven.cc/w/lyjzxp
+wallhaven-ml2lq9.png	534ec3c019edeb0f6dfb19c6851f509ea1a57126f9e6cfc021a4a9597cdef3c3	https://w.wallhaven.cc/full/ml/wallhaven-ml2lq9.png	https://wallhaven.cc/w/ml2lq9
+wallhaven-w5m62x.png	df71badbbdd73e99969388d9f3d223c8c1ff30b120a89872cf19d66991f5e860	https://w.wallhaven.cc/full/w5/wallhaven-w5m62x.png	https://wallhaven.cc/w/w5m62x
+wallhaven-xe9l7o.png	51cffcde3d0ea8ffbd1a3cc9267999dafa4ecb3c54f06cd5d6554818e4f854fd	https://w.wallhaven.cc/full/xe/wallhaven-xe9l7o.png	https://wallhaven.cc/w/xe9l7o

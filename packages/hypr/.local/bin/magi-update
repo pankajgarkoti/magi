@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# magi-update: pull the latest MAGI, re-stow, re-run the idempotent setup steps and
+# reload Hyprland/waybar. Your current theme is kept. Extra args go to install.sh
+# (e.g. --dry-run, --no-packages).
+set -euo pipefail
+self=$(readlink -f "${BASH_SOURCE[0]}")
+# stowed: ~/.local/bin/magi-update -> <repo>/packages/hypr/.local/bin/magi-update
+repo=${MAGI_DIR:-$(cd "$(dirname "$self")/../../../.." && pwd)}
+[ -x "$repo/install.sh" ] || repo=$HOME/.local/share/magi
+[ -x "$repo/install.sh" ] || { echo "magi-update: MAGI checkout not found (set MAGI_DIR)" >&2; exit 1; }
+echo "==> MAGI checkout: $repo"
+dry=; for a in "$@"; do [ "$a" = --dry-run ] && dry=1; done
+if [ -d "$repo/.git" ] && ! git -C "$repo" rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
+  echo "==> no upstream branch configured; skipping git pull"
+elif [ -d "$repo/.git" ]; then
+  if [ -n "$dry" ]; then echo "[dry-run] git -C $repo pull --ff-only"
+  else git -C "$repo" pull --ff-only || { echo "magi-update: git pull failed (local changes?); fix and re-run" >&2; exit 1; }
+  fi
+fi
+"$repo/install.sh" --update "$@"
+[ -n "$dry" ] && exit 0
+# inside a Hyprland session: reload the compositor and the bar, restart the resident panels
+if [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]; then
+  echo "==> reloading Hyprland, waybar and the MAGI panels"
+  hyprctl reload >/dev/null || true
+  pkill -SIGUSR2 -x waybar || true
+  for d in magi magi-overview eva-wifi; do
+    pkill -f "$d --daemon" 2>/dev/null || true
+    hyprctl dispatch "hl.dsp.exec_cmd(\"$d --daemon\")" >/dev/null || true
+  done
+fi
+echo "==> MAGI is up to date"

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# SUPER+B: open the desktop's default web browser (xdg-settings), or Firefox if none is set.
+d=$(xdg-settings get default-web-browser 2>/dev/null)
+if [ -n "$d" ] && command -v gtk-launch >/dev/null; then exec gtk-launch "$d" "$@"; fi
+exec firefox "$@"

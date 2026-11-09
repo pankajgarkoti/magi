@@ -1,0 +1,87 @@
+[general]
+import = ["~/.config/hypr/themes/current/alacritty.toml"]
+live_config_reload = true
+
+[font]
+size = 16
+
+[font.bold]
+family = "IosevkaTerm Nerd Font Mono"
+style = "Heavy"
+
+[font.bold_italic]
+family = "IosevkaTerm Nerd Font Mono"
+style = "Heavy Italic"
+
+[font.italic]
+family = "IosevkaTerm Nerd Font Mono"
+style = "Heavy Italic"
+
+[font.normal]
+family = "IosevkaTerm Nerd Font Mono"
+style = "Medium"
+
+[mouse]
+hide_when_typing = false
+
+[window]
+decorations = "None"
+padding = { x = 10, y = 8 }
+dynamic_padding = true
+resize_increments = false
+option_as_alt = "OnlyLeft"
+opacity = 0.80
+blur = true
+
+[window.dimensions]
+lines = 72
+columns = 300
+
+[keyboard]
+bindings = [
+	# Toggle fullscreen
+	{ key = "F11", action = "ToggleFullscreen" },
+	# Remap Option+Key to Ctrl-b + Key for common tmux shortcuts
+	# New window (Option + c → Ctrl-b + c)
+	{ key = "C", mods = "Alt", chars = "\u0002c" },
+	# Detach (Option + d → Ctrl-b + d)
+	{ key = "D", mods = "Alt", chars = "\u0002d" },
+	# Next window (Option + n → Ctrl-b + n)
+	{ key = "N", mods = "Alt", chars = "\u0002n" },
+	# Previous window (Option + p → Ctrl-b + p)
+	{ key = "P", mods = "Alt", chars = "\u0002p" },
+	# Last window (Option + p → Ctrl-b + p)
+	{ key = "L", mods = "Alt", chars = "\u0002l" },
+	# Split pane vertically (Option + | → Ctrl-b + |)
+	{ key = "Backslash", mods = "Alt", chars = "\u0002|" },
+	# Split pane horizontally (Option + - → Ctrl-b + -)
+	{ key = "Minus", mods = "Alt", chars = "\u0002-" },
+	# Select the last pane (Option + ; → Ctrl-b + ;)
+	# Resize pane (Option + arrow keys → Ctrl-b + arrow keys)
+	{ key = "Left", mods = "Alt", chars = "\u0002\u001bOD" },  # Left arrow
+	{ key = "Right", mods = "Alt", chars = "\u0002\u001bOC" }, # Right arrow
+	{ key = "Up", mods = "Alt", chars = "\u0002\u001bOA" },    # Up arrow
+	{ key = "Down", mods = "Alt", chars = "\u0002\u001bOB" },  # Down arrow
+	{ key = "H", mods = "Alt", chars = "\u0002\u001bOD" },     # Left arrow
+	{ key = "L", mods = "Alt", chars = "\u0002\u001bOC" },     # Right arrow
+	{ key = "K", mods = "Alt", chars = "\u0002\u001bOA" },     # Up arrow
+	{ key = "J", mods = "Alt", chars = "\u0002\u001bOB" },     # Down arrow
+	{ key = "Semicolon", mods = "Alt", chars = "\u0002l" },
+	# Kill pane (Option + x → Ctrl-b + x)
+	{ key = "X", mods = "Alt", chars = "\u0002x" },
+	# Show window list (Option + w → Ctrl-b + w)
+	{ key = "W", mods = "Alt", chars = "\u0002w" },
+	# Command prompt (Option + : → Ctrl-b + :)
+	{ key = "'", mods = "Alt", chars = "\u0002:" },
+	# Switch to windows 0-9 (Option + number → Ctrl-b + number)
+	{ key = "Key0", mods = "Alt", chars = "\u00020" },
+	{ key = "Key1", mods = "Alt", chars = "\u00021" },
+	{ key = "Key2", mods = "Alt", chars = "\u00022" },
+	{ key = "Key3", mods = "Alt", chars = "\u00023" },
+	{ key = "Key4", mods = "Alt", chars = "\u00024" },
+	{ key = "Key5", mods = "Alt", chars = "\u00025" },
+	{ key = "Key6", mods = "Alt", chars = "\u00026" },
+	{ key = "Key7", mods = "Alt", chars = "\u00027" },
+	{ key = "Key8", mods = "Alt", chars = "\u00028" },
+	{ key = "Key9", mods = "Alt", chars = "\u00029" },
+]

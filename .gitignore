@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+# wallpapers are downloaded at install time (see wallpapers/manifest.tsv), never committed
+wallpapers/*.png
+wallpapers/*.jpg
+!docs/screenshots/*.png
+tests/*.log
