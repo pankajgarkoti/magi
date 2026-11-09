@@ -18,7 +18,10 @@ wall=$(grep -o '"[^"]*\.\(png\|jpg\)"' $T/current/theme.lua | tr -d '"')
 [ -f "$W/$wall" ] || wall=$(cd "$W" 2>/dev/null && ls | grep -iE '\.(png|jpg)$' | head -1)
 # live = running inside a Hyprland session (not the installer, a tty or ssh)
 live=; [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && live=1
-mkdir -p ~/.config/mako ~/.config/wofi ~/.config/hypr ~/.cache
+mkdir -p ~/.config/mako ~/.config/wofi ~/.config/hypr ~/.config/waybar ~/.cache
+# waybar imports colors.css from its own folder: point it at the theme (absolute, so it
+# also works when ~/.config/waybar is made of stow links into the repo)
+ln -sfn ~/.config/hypr/themes/current/colors.css ~/.config/waybar/colors.css
 
 # notifications (mako has no include, so it is generated)
 cat > ~/.config/mako/config <<CONF

@@ -1,32 +1,43 @@
 # MAGI
 
-**An Evangelion-themed Hyprland desktop for Fedora 44.** One installer turns a stock Fedora
-Workstation into a keyboard-first tiling desktop styled after NERV's MAGI supercomputer:
-square edges, black glass, hazard stripes, and three switchable colour themes that restyle
-everything at once (bar, terminal, GTK and libadwaita apps, icons, lock screen, tmux, ranger).
+My Hyprland setup for Fedora 44, packaged so it installs on a fresh machine with one command.
+It's themed after the MAGI computers from *Neon Genesis Evangelion*: square corners, black
+glass, a hazard stripe here and there, and three colour themes you can flip between.
 
-GNOME stays installed. MAGI is just another session on the login screen.
+Every screenshot below came from a throwaway Fedora 44 Workstation VM, right after running the
+installer.
 
-Screenshots coming soon. They are being taken in a clean test VM.
+| | |
+|---|---|
+| ![Desktop, blue theme](docs/screenshots/desktop-blue.png) | ![MAGI control centre](docs/screenshots/magi-control-centre.png) |
+| ![Overview](docs/screenshots/overview.png) | ![Wi-Fi picker](docs/screenshots/wifi-picker.png) |
+| ![Bluetooth picker](docs/screenshots/bluetooth-picker.png) | ![NERV theme](docs/screenshots/theme-nerv.png) |
+| ![EVA Unit-01 theme](docs/screenshots/theme-unit01.png) | |
 
-## What you get
+GNOME stays installed. Hyprland is just one more session on the login screen, so if you hate
+it you log out and pick GNOME again.
 
-- **Hyprland 0.57** (Lua config) from COPR `sdegler/hyprland`, with hyprlock, hypridle,
-  hyprpaper, hyprsunset and hyprpolkitagent.
-- **waybar** with a MAGI badge, **mako** notifications, **wofi** launcher, clipboard history (cliphist).
-- **MAGI control centre** (`magi`): network, Bluetooth, sound (devices, volume, mic), display
-  (brightness, night light), power (profiles, lock, suspend, log out, reboot, shut down, each
-  confirmed), theme and wallpaper picker, and tools. Keyboard first, opens in under 100 ms.
-- **MAGI overview** (`magi-overview`): every window on every workspace with live thumbnails;
-  type to filter, Enter to jump.
-- **eva-wifi** and **eva-bluetooth**: keyboard-driven Wi-Fi and Bluetooth pickers.
-- **Themes**: `blue` (Catppuccin Macchiato, default), `nerv` (red/orange on black) and
-  `unit01` (purple/green). One command switches all of it live.
-- A generated **EVA GTK theme and icon theme**, a libadwaita colour layer, an EVA
-  GtkSourceView scheme, a themed polkit prompt, and a hex-lattice lock screen.
-- **Alacritty** + **tmux** (Dracula-based status bar in theme colours), **ranger** with an EVA
-  colour scheme and text previews, **Nautilus** for files.
-- The IosevkaTerm Nerd Font everywhere, and a MAGI boot banner in new terminals.
+## How this was made
+
+Built by talking to a Claude Code session that ran a handful of agents in tmux:
+[github.com/pankajgarkoti/bridge](https://github.com/pankajgarkoti/bridge).
+
+## What's in it
+
+- Hyprland 0.57 with the new Lua config, from the `sdegler/hyprland` COPR. Also hyprlock,
+  hypridle, hyprpaper, hyprsunset and hyprpolkitagent.
+- waybar, mako for notifications, wofi as the launcher, cliphist for clipboard history.
+- `magi`, a control centre I use instead of GNOME's quick settings: network, Bluetooth,
+  sound devices and volume, brightness and night light, power profiles, lock/suspend/reboot
+  (each one asks twice), themes and wallpapers. It stays resident, so it opens in under 100 ms.
+- `magi-overview`: all windows on all workspaces as live thumbnails. Type to filter, Enter jumps.
+- `eva-wifi` and `eva-bluetooth`, small keyboard pickers for Wi-Fi and Bluetooth.
+- Three themes: `blue` (Catppuccin Macchiato, the default), `nerv` (red and orange on black),
+  `unit01` (purple and green). Switching one restyles the bar, terminal, tmux, GTK and
+  libadwaita apps, icons, the polkit prompt and the lock screen, live.
+- Alacritty, tmux with a recoloured Dracula status bar, ranger, Nautilus, and the IosevkaTerm
+  Nerd Font everywhere. New terminals print a little MAGI vote banner (memory, network,
+  battery). `MAGI_NO_BANNER=1` turns it off.
 
 ## Install
 
@@ -59,7 +70,7 @@ safe to re-run):
    links the configs with GNU stow (`packages/*`, linked file by file).
 7. Hooks `~/.bashrc.d` (Fedora's default `.bashrc` already does) and fetches tmux-sensible.
 8. Generates the blue wallpaper and downloads the EVA wallpapers listed in
-   [`wallpapers/manifest.tsv`](wallpapers/manifest.tsv) (sha256 checked). Offline? They are
+   [`wallpapers/manifest.tsv`](wallpapers/manifest.tsv) (sha256 checked). If you are offline they are
    skipped and the blue wallpaper is used until you re-run the installer.
 9. Sets fonts and dark mode in gsettings and runs `eva-theme blue`.
 10. Verifies every link, generated file, package and the Hyprland config.
@@ -77,7 +88,7 @@ setup steps with your current theme, and reloads Hyprland, waybar and the MAGI p
 
 ## Shortcuts
 
-SUPER is the window-manager key. Alt is left to tmux.
+SUPER does window management. Alt is left alone because tmux uses it.
 
 | Keys | Action |
 |---|---|

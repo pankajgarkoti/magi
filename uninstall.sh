@@ -26,7 +26,7 @@ run stow --no-folding -d "$PK" -t "$HOME" -D "${STOW_PACKAGES[@]}"
 
 echo "==> removing files MAGI generated"
 for f in .config/mako/config .config/wofi/style.css .config/hypr/hyprlock.conf .config/hypr/hyprpaper.conf \
-         .config/hypr/hyprtoolkit.conf .config/xsettingsd/xsettingsd.conf .config/hypr/themes/current \
+         .config/hypr/hyprtoolkit.conf .config/xsettingsd/xsettingsd.conf .config/hypr/themes/current .config/waybar/colors.css \
          .cache/eva-lock.png .local/share/themes/EVA .local/share/icons/EVA \
          .local/share/gtksourceview-5/styles/eva.xml .local/state/magi .cache/magi; do
   if [ -e "$HOME/$f" ] || [ -L "$HOME/$f" ]; then run rm -rf "${HOME:?}/$f"; fi

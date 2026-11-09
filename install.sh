@@ -111,6 +111,8 @@ backup() {
   printf '  %s↳%s backed up ~/%s\n' "$Y" "$R" "$rel"
 }
 
+# the curl one-liner re-runs install.sh from the fresh checkout: print the banner once
+if [ -z "${MAGI_REEXEC:-}" ]; then
 printf '%s' "$B$C"
 cat <<'EOF'
  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -119,6 +121,7 @@ cat <<'EOF'
  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 EOF
 printf '%s' "$R"
+fi
 [ "$DRY" = 1 ] && printf '%sDRY RUN: nothing will be changed.%s\n' "$Y" "$R"
 
 # ---------------------------------------------------------------- 1. preflight
@@ -155,7 +158,8 @@ else
     skip "checkout exists: $MAGI_DIR"
   fi
   [ "$DRY" = 1 ] && [ ! -d "$MAGI_DIR" ] && { echo "  (dry run: would continue with $MAGI_DIR/install.sh)"; exit 0; }
-  exec "$MAGI_DIR/install.sh" "${ARGS[@]}"
+  echo "  continuing with $MAGI_DIR/install.sh"
+  MAGI_REEXEC=1 exec "$MAGI_DIR/install.sh" "${ARGS[@]}"
 fi
 PK="$MAGI_DIR/packages"
 
@@ -244,7 +248,8 @@ done
 # files eva-theme generates (not links): keep the user's originals on the first install
 if [ "$FIRST_INSTALL" = 1 ] && [ "$UPDATE" = 0 ]; then
   for rel in .config/mako/config .config/wofi/style.css .config/hypr/hyprlock.conf \
-             .config/hypr/hyprpaper.conf .config/hypr/hyprtoolkit.conf .config/xsettingsd/xsettingsd.conf; do
+             .config/hypr/hyprpaper.conf .config/hypr/hyprtoolkit.conf .config/xsettingsd/xsettingsd.conf \
+             .config/waybar/colors.css; do
     if [ -e "$HOME/$rel" ] && [ ! -L "$HOME/$rel" ]; then backup "$rel"; moved=$((moved + 1)); fi
   done
 fi
@@ -355,7 +360,7 @@ else
   for f in .config/mako/config .config/wofi/style.css .config/hypr/hyprlock.conf .config/hypr/hyprpaper.conf \
            .config/hypr/hyprtoolkit.conf .config/xsettingsd/xsettingsd.conf .cache/eva-lock.png \
            .local/share/themes/EVA/gtk-3.0/gtk.css .local/share/themes/EVA/gtk-4.0/gtk.css \
-           .local/share/icons/EVA/index.theme .local/share/gtksourceview-5/styles/eva.xml \
+           .local/share/icons/EVA/index.theme .local/share/gtksourceview-5/styles/eva.xml .config/waybar/colors.css \
            Pictures/wallpapers/eva/catppuccin-blue.png; do
     if [ -s "$HOME/$f" ]; then gen=$((gen + 1)); else fail "missing generated file: ~/$f"; fi
   done

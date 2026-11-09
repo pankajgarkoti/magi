@@ -43,6 +43,8 @@ hl.on("hyprland.start", function()
     hl.exec_cmd(terminal .. " --class magi-scratch -e tmux new-session -A -s magi")
 end)
 
+-- GDM starts the session without ~/.local/bin on PATH; the MAGI tools live there
+hl.env("PATH", HOME .. "/.local/bin:" .. (os.getenv("PATH") or "/usr/local/bin:/usr/bin"))
 hl.env("XCURSOR_SIZE", "24")
 hl.env("HYPRCURSOR_SIZE", "24")
 -- one cursor everywhere: Hyprland, GTK (gsettings), XWayland and Qt all use Adwaita
@@ -76,6 +78,8 @@ hl.config({
         blur = { enabled = true, size = 6, passes = 2, new_optimizations = true, xray = false, noise = 0.02, vibrancy = 0.2 },
     },
     animations = { enabled = true },
+    -- no "Hyprland updated" news window or donation prompt on login
+    ecosystem = { no_update_news = true, no_donation_nag = true },
     dwindle = { preserve_split = true },
     misc = {
         force_default_wallpaper = 0,
