@@ -7,13 +7,7 @@ everything at once (bar, terminal, GTK and libadwaita apps, icons, lock screen, 
 
 GNOME stays installed. MAGI is just another session on the login screen.
 
-![MAGI desktop, blue theme](docs/screenshots/desktop-blue.png)
-
-| | |
-|---|---|
-| ![MAGI control centre](docs/screenshots/magi-control-centre.png) | ![Overview](docs/screenshots/overview.png) |
-| ![Wi-Fi picker](docs/screenshots/wifi-picker.png) | ![Bluetooth picker](docs/screenshots/bluetooth-picker.png) |
-| ![NERV theme](docs/screenshots/theme-nerv.png) | ![EVA Unit-01 theme](docs/screenshots/theme-unit01.png) |
+Screenshots coming soon. They are being taken in a clean test VM.
 
 ## What you get
 
