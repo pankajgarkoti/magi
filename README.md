@@ -6,8 +6,9 @@ glass, a hazard stripe here and there, and three colour themes you can flip betw
 
 ![MAGI, NERV theme: control centre theme page over an EVA wallpaper, translucent terminal](docs/screenshots/theme-nerv.png)
 
-A 55-second demo: boot, the control centre, the overview, NERV → Unit-01 → blue, then the
-Wi-Fi and Bluetooth pickers ([MP4](docs/magi-demo.mp4)):
+23 seconds of it: NERV → Unit-01 → blue, the control centre, the overview, then the Wi-Fi and
+Bluetooth pickers ([MP4](docs/magi-demo.mp4)). Each theme switch takes about 5 s in the VM; those
+waits are cut.
 
 ![MAGI demo](docs/magi-demo.gif)
 
