@@ -6,8 +6,13 @@ glass, a hazard stripe here and there, and three colour themes you can flip betw
 
 ![MAGI, NERV theme: control centre theme page over an EVA wallpaper, translucent terminal](docs/screenshots/theme-nerv.png)
 
-Every screenshot here came from a throwaway Fedora 44 Workstation VM, right after running the
-installer.
+A 55-second demo: boot, the control centre, the overview, NERV → Unit-01 → blue, then the
+Wi-Fi and Bluetooth pickers ([MP4](docs/magi-demo.mp4)):
+
+![MAGI demo](docs/magi-demo.gif)
+
+The screenshots and the demo came from a throwaway Fedora 44 Workstation VM, right after running
+the installer. The Wi-Fi networks and the Bluetooth device in them are simulated inside that VM.
 
 | | |
 |---|---|
