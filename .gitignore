@@ -5,3 +5,4 @@ wallpapers/*.png
 wallpapers/*.jpg
 !docs/screenshots/*.png
 tests/*.log
+.work/
