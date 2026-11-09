@@ -4,15 +4,16 @@ My Hyprland setup for Fedora 44, packaged so it installs on a fresh machine with
 It's themed after the MAGI computers from *Neon Genesis Evangelion*: square corners, black
 glass, a hazard stripe here and there, and three colour themes you can flip between.
 
-Every screenshot below came from a throwaway Fedora 44 Workstation VM, right after running the
+![MAGI, NERV theme: control centre theme page over an EVA wallpaper, translucent terminal](docs/screenshots/theme-nerv.png)
+
+Every screenshot here came from a throwaway Fedora 44 Workstation VM, right after running the
 installer.
 
 | | |
 |---|---|
-| ![Desktop, blue theme](docs/screenshots/desktop-blue.png) | ![MAGI control centre](docs/screenshots/magi-control-centre.png) |
+| ![EVA Unit-01 theme](docs/screenshots/theme-unit01.png) | ![MAGI control centre](docs/screenshots/magi-control-centre.png) |
 | ![Overview](docs/screenshots/overview.png) | ![Wi-Fi picker](docs/screenshots/wifi-picker.png) |
-| ![Bluetooth picker](docs/screenshots/bluetooth-picker.png) | ![NERV theme](docs/screenshots/theme-nerv.png) |
-| ![EVA Unit-01 theme](docs/screenshots/theme-unit01.png) | |
+| ![Bluetooth picker](docs/screenshots/bluetooth-picker.png) | ![Desktop, blue theme](docs/screenshots/desktop-blue.png) |
 
 GNOME stays installed. Hyprland is just one more session on the login screen, so if you hate
 it you log out and pick GNOME again.
