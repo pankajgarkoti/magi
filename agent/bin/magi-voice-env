@@ -1,0 +1,17 @@
+# sourced by magi-listen and hud-say: where the local voice runtime lives
+#   image:      /usr/lib/magi/voice          (venv + models, part of the MAGI image)
+#   install.sh: ~/.local/share/magi-voice    (made by agent/setup.sh)
+_self_dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+for VOICE_HOME in "${MAGI_VOICE_HOME:-}" /usr/lib/magi/voice "$HOME/.local/share/magi-voice"; do
+  [ -n "$VOICE_HOME" ] && [ -x "$VOICE_HOME/venv/bin/python" ] && break
+done
+if [ ! -x "$VOICE_HOME/venv/bin/python" ]; then
+  echo "MAGI voice runtime not found (image: /usr/lib/magi/voice; install.sh: run agent/setup.sh)" >&2
+  return 1
+fi
+VOICE_PY=$VOICE_HOME/venv/bin/python
+for VOICE_LIB in /usr/share/magi/agent "$_self_dir/../lib" "$_self_dir/../share/magi-agent"; do
+  [ -f "$VOICE_LIB/listen.py" ] && break
+done
+export VOICE_HOME VOICE_PY VOICE_LIB HF_HUB_OFFLINE=1
+export HUD_MODEL_DIR=${HUD_MODEL_DIR:-$VOICE_HOME/models}

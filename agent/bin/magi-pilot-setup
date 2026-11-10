@@ -1,0 +1,470 @@
+#!/usr/bin/env python3
+"""magi-pilot-setup: first-login setup for the MAGI orchestrator.
+
+Four steps, each skippable: what the orchestrator is -> install Claude Code (Anthropic's
+official installer, nothing bundled) -> sign in to the user's own Claude account -> local
+voice (mic, level meter, transcript test, speaking test). Styled from the active MAGI theme
+(~/.config/hypr/themes/current/colors.css), like the control centre.
+
+  magi-pilot-setup            open (magi-agent firstrun opens it once, on the first login)
+  MAGI_SETUP_STEP=3 ...       start on a step (testing / screenshots)
+"""
+import json
+import os
+import subprocess
+import sys
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
+from gi.repository import Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
+
+HOME = os.path.expanduser("~")
+COLORS = HOME + "/.config/hypr/themes/current/colors.css"
+STATE = os.path.join(os.environ.get("XDG_STATE_HOME", HOME + "/.local/state"), "magi/agent")
+CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME", HOME + "/.config"), "magi/agent.conf")
+LICENCE = "https://code.claude.com/docs/en/legal-and-compliance"
+
+CSS = """
+@import url("file://%s");
+* { font-family: "IosevkaTerm Nerd Font Mono"; border-radius: 0; box-shadow: none; outline: none; }
+window.pilot { background: alpha(@base, 0.96); color: @text; border: 1px solid @accent; }
+.header { background: @accent; color: @base; padding: 5px 12px; }
+.header .title { font-size: 12px; font-weight: 800; letter-spacing: 3px; }
+.header .aux { font-size: 10px; font-weight: 800; letter-spacing: 2px; }
+.hazard { min-height: 4px; background-image: repeating-linear-gradient(135deg, alpha(@accent, 0.55) 0px, alpha(@accent, 0.55) 6px, transparent 6px, transparent 12px); }
+.steps { padding: 10px 14px; border-bottom: 1px solid @surface1; }
+.step { border: 1px solid @surface1; border-left: 3px solid @surface1; padding: 5px 10px; background: alpha(@surface0, 0.45); }
+.step .n { font-size: 10px; font-weight: 800; letter-spacing: 2px; color: @dim; }
+.step .t { font-size: 10px; font-weight: 800; letter-spacing: 3px; color: @dim; }
+.step.cur { border-left-color: @accent; background: alpha(@accent, 0.14); }
+.step.cur .t { color: @text; }
+.step.done { border-left-color: @good; }
+.step.done .n { color: @good; }
+.body { padding: 14px 18px; }
+.h { font-size: 15px; font-weight: 800; letter-spacing: 3px; color: @accent2; }
+.p { font-size: 12px; color: alpha(@text, 0.88); }
+.dim { font-size: 10px; letter-spacing: 1px; color: @dim; }
+.kv .k { font-size: 10px; letter-spacing: 2px; color: @dim; min-width: 120px; }
+.kv .v { font-size: 12px; color: @c1; }
+.v.good { color: @good; } .v.warn { color: @warn; } .v.bad { color: @bad; }
+.log { font-size: 10px; background: alpha(@surface0, 0.6); color: @c1; padding: 6px; border-left: 3px solid @surface1; }
+textview, textview text { background: transparent; color: @c1; font-size: 10px; }
+button { background: transparent; color: @text; border: 1px solid @surface1; padding: 5px 14px; font-size: 11px; font-weight: 800; letter-spacing: 2px; }
+button:hover { border-color: @accent; color: @accent; }
+button.primary { background: @accent; color: @base; border-color: @accent; }
+button.primary:hover { background: @accent2; border-color: @accent2; color: @base; }
+button:disabled { color: alpha(@dim, 0.5); border-color: alpha(@surface1, 0.5); background: transparent; }
+dropdown button { padding: 3px 8px; font-weight: normal; letter-spacing: 0; }
+levelbar trough { min-height: 8px; background: alpha(@surface1, 0.9); border: none; }
+levelbar block.filled { background: @good; border: none; }
+levelbar block.high { background: @warn; }
+switch { background: alpha(@surface1, 0.9); border: 1px solid @surface1; min-height: 16px; }
+switch:checked { background: @accent; }
+switch slider { background: @text; min-width: 16px; min-height: 16px; }
+.footer { border-top: 1px solid @surface1; padding: 8px 12px; }
+.status { font-size: 10px; letter-spacing: 2px; color: @c1; font-weight: bold; }
+.status.err { color: @bad; } .status.ok { color: @good; } .status.warn { color: @warn; }
+""" % COLORS
+
+STEPS = ["ORCHESTRATOR", "CLAUDE CODE", "SIGN IN", "VOICE"]
+
+
+def lbl(text, *cls, wrap=False, xalign=0.0, hexpand=False):
+    w = Gtk.Label(label=text, xalign=xalign, hexpand=hexpand)
+    for c in cls:
+        w.add_css_class(c)
+    if wrap:
+        w.set_wrap(True)
+        w.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        w.set_max_width_chars(80)
+    return w
+
+
+def btn(text, cb, primary=False):
+    b = Gtk.Button(label=text)
+    if primary:
+        b.add_css_class("primary")
+    b.connect("clicked", lambda *_: cb())
+    return b
+
+
+def which(cmd):
+    path = os.environ.get("PATH", "") + ":" + HOME + "/.local/bin"
+    for d in path.split(":"):
+        if d and os.access(os.path.join(d, cmd), os.X_OK):
+            return os.path.join(d, cmd)
+    return None
+
+
+def set_conf(key, value):
+    os.makedirs(os.path.dirname(CONF), exist_ok=True)
+    lines = open(CONF).read().splitlines() if os.path.exists(CONF) else []
+    lines = [l for l in lines if not l.startswith(key + "=")] + [f"{key}={value}"]
+    open(CONF, "w").write("\n".join(lines) + "\n")
+
+
+def touch(name):
+    os.makedirs(STATE, exist_ok=True)
+    open(os.path.join(STATE, name), "a").close()
+
+
+def sources():
+    try:
+        out = subprocess.run(["pactl", "-f", "json", "list", "sources"], capture_output=True, text=True, timeout=5).stdout
+        return [(s["name"], s.get("description") or s["name"]) for s in json.loads(out)]
+    except Exception:
+        return []
+
+
+class Pilot(Gtk.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="MAGI · PILOT SETUP")
+        self.add_css_class("pilot")
+        self.set_default_size(760, 560)
+        self.set_decorated(False)
+        self.level_proc = None
+        self.poll = None
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.set_child(root)
+        hdr = Gtk.Box(spacing=10)
+        hdr.add_css_class("header")
+        hdr.append(lbl("MAGI · PILOT SETUP", "title", hexpand=True))
+        hdr.append(lbl("ORCHESTRATOR · VOICE · AGENTS", "aux"))
+        root.append(hdr)
+        hz = Gtk.Box()
+        hz.add_css_class("hazard")
+        root.append(hz)
+        self.stepbox = Gtk.Box(spacing=8, homogeneous=True)
+        self.stepbox.add_css_class("steps")
+        self.chips = []
+        for i, name in enumerate(STEPS):
+            c = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            c.add_css_class("step")
+            c.append(lbl(f"STEP {i + 1}", "n"))
+            c.append(lbl(name, "t"))
+            self.chips.append(c)
+            self.stepbox.append(c)
+        root.append(self.stepbox)
+        self.body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, vexpand=True)
+        self.body.add_css_class("body")
+        root.append(self.body)
+        foot = Gtk.Box(spacing=8)
+        foot.add_css_class("footer")
+        self.status = lbl("", "status", hexpand=True)
+        foot.append(self.status)
+        self.btns = Gtk.Box(spacing=8)
+        foot.append(self.btns)
+        root.append(foot)
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", self.on_key)
+        self.add_controller(keys)
+        self.show_step(int(os.environ.get("MAGI_SETUP_STEP", "1")) - 1)
+
+    # ------------------------------------------------------------ frame
+    def on_key(self, _c, keyval, _code, _state):
+        if keyval == Gdk.KEY_Escape:
+            self.not_now()
+            return True
+        return False
+
+    def frame(self, i, title, buttons):
+        self.cur = i
+        self.stop_level()
+        if self.poll:
+            GLib.source_remove(self.poll)
+            self.poll = None
+        for j, c in enumerate(self.chips):
+            for k in ("cur", "done"):
+                c.remove_css_class(k)
+            if j < i:
+                c.add_css_class("done")
+            elif j == i:
+                c.add_css_class("cur")
+        for box in (self.body, self.btns):
+            ch = box.get_first_child()
+            while ch:
+                nxt = ch.get_next_sibling()
+                box.remove(ch)
+                ch = nxt
+        self.body.append(lbl(title, "h"))
+        for b in buttons:
+            self.btns.append(b)
+        self.say("")
+
+    def say(self, text, kind=None):
+        self.status.set_text(text)
+        for k in ("err", "ok", "warn"):
+            self.status.remove_css_class(k)
+        if kind:
+            self.status.add_css_class(kind)
+
+    def kv(self, k, v, kind=None):
+        b = Gtk.Box(spacing=8)
+        b.add_css_class("kv")
+        b.append(lbl(k, "k"))
+        val = lbl(v, "v", hexpand=True)
+        if kind:
+            val.add_css_class(kind)
+        b.append(val)
+        self.body.append(b)
+        return val
+
+    def show_step(self, i):
+        [self.step_intro, self.step_install, self.step_signin, self.step_voice][max(0, min(3, i))]()
+
+    def not_now(self):
+        touch("setup-dismissed")
+        self.get_application().quit()
+
+    # ------------------------------------------------------------ 1
+    def step_intro(self):
+        self.frame(0, "TALK TO ONE AGENT. IT RUNS THE OTHERS.", [
+            btn("NOT NOW", self.not_now), btn("SET UP", lambda: self.step_install(), primary=True)])
+        for t in [
+            "MAGI can run an orchestrator: one Claude Code session in tmux window 1 of the session "
+            "\"magi\". You speak or type to it. It starts other agents in their own windows, checks "
+            "their work, drives the desktop with hyprctl, and asks you only for decisions.",
+            "Local: speech recognition (faster-whisper), the spoken replies (Piper), tmux, the bar "
+            "status. Audio never leaves this machine.",
+            "Sent to Anthropic: the text you say or type to the orchestrator, and what its agents "
+            "read and write, as with any Claude Code session. You sign in with your own account.",
+            "Open it any time with SUPER+`, the ◉ module in the bar, or the AGENTS page of the "
+            "control centre (SUPER+SHIFT+SPACE). SUPER+SHIFT+M mutes the listener.",
+        ]:
+            self.body.append(lbl(t, "p", wrap=True))
+        self.body.append(lbl("Everything here is optional. NOT NOW keeps the plain desktop; "
+                             "the AGENTS page can run this setup later.", "dim", wrap=True))
+
+    # ------------------------------------------------------------ 2
+    def step_install(self):
+        self.frame(1, "INSTALL CLAUDE CODE", [
+            btn("SKIP", lambda: self.step_signin()),
+            btn("INSTALL", self.install, primary=True),
+            btn("NEXT", lambda: self.step_signin())])
+        self.next_btn = self.btns.get_last_child()
+        self.inst_btn = self.next_btn.get_prev_sibling()
+        path = which("claude")
+        self.inst_state = self.kv("CLAUDE CODE", path or "not installed", "good" if path else "warn")
+        self.body.append(lbl(
+            "MAGI does not include Claude Code. INSTALL runs Anthropic's official installer for "
+            "your user (curl -fsSL https://claude.ai/install.sh | bash, into ~/.local/bin). Claude "
+            "Code is Anthropic's software under Anthropic's terms:", "p", wrap=True))
+        self.body.append(lbl(LICENCE, "dim"))
+        sw = Gtk.ScrolledWindow(vexpand=True)
+        self.out = Gtk.TextView(editable=False, monospace=True, cursor_visible=False)
+        self.out.set_wrap_mode(Gtk.WrapMode.CHAR)
+        sw.set_child(self.out)
+        sw.add_css_class("log")
+        self.body.append(sw)
+        self.inst_btn.set_sensitive(not path)
+        self.next_btn.set_sensitive(bool(path))
+        if path:
+            self.next_btn.add_css_class("primary")
+
+    def install(self):
+        self.inst_btn.set_sensitive(False)
+        self.say("INSTALLING · ANTHROPIC'S INSTALLER", "warn")
+        buf = self.out.get_buffer()
+        proc = Gio.Subprocess.new(["magi-agent", "install-claude"],
+                                  Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE)
+        stream = Gio.DataInputStream.new(proc.get_stdout_pipe())
+
+        def line(s, res):
+            try:
+                text, _ = s.read_line_finish_utf8(res)
+            except GLib.Error:
+                text = None
+            if text is None:
+                return
+            buf.insert(buf.get_end_iter(), text + "\n")
+            s.read_line_async(GLib.PRIORITY_DEFAULT, None, line)
+
+        stream.read_line_async(GLib.PRIORITY_DEFAULT, None, line)
+
+        def done(p, res):
+            p.wait_finish(res)
+            path = which("claude")
+            if p.get_successful() and path:
+                self.inst_state.set_text(path)
+                self.inst_state.remove_css_class("warn")
+                self.inst_state.add_css_class("good")
+                self.say("INSTALLED", "ok")
+                self.next_btn.set_sensitive(True)
+                self.next_btn.add_css_class("primary")
+            else:
+                self.say("INSTALL FAILED · OFFLINE? TRY AGAIN", "err")
+                self.inst_btn.set_sensitive(True)
+
+        proc.wait_async(None, done)
+
+    # ------------------------------------------------------------ 3
+    def step_signin(self):
+        self.frame(2, "SIGN IN TO YOUR CLAUDE ACCOUNT", [
+            btn("SKIP", lambda: self.step_voice()),
+            btn("OPEN CONSOLE", self.signin, primary=True),
+            btn("NEXT", lambda: self.step_voice())])
+        self.next_btn = self.btns.get_last_child()
+        self.next_btn.set_sensitive(False)
+        self.auth_state = self.kv("ACCOUNT", "checking...")
+        self.kv("ORCHESTRATOR", "tmux session magi · window 1")
+        self.body.append(lbl(
+            "OPEN CONSOLE turns the orchestrator on (it starts at every login from now on) and drops "
+            "down its console. Window 1 runs `claude auth login`: follow the link in your browser. "
+            "This step continues by itself once you are signed in.", "p", wrap=True))
+        self.body.append(lbl("Turn it off later with `magi-agent off` or the AGENTS page.", "dim", wrap=True))
+        self.check_auth()
+        self.poll = GLib.timeout_add_seconds(2, self.check_auth)
+
+    def signin(self):
+        subprocess.Popen(["magi-agent", "on"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen(["hyprctl", "dispatch", 'hl.dsp.workspace.toggle_special("magi")'],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.say("CONSOLE OPEN · SIGN IN THERE", "warn")
+
+    def check_auth(self):
+        if not which("claude"):
+            self.auth_state.set_text("Claude Code not installed (step 2)")
+            return True
+
+        def done(p, res):
+            try:
+                _, out, _ = p.communicate_utf8_finish(res)
+                ok = json.loads(out or "{}").get("loggedIn")
+            except Exception:
+                ok = False
+            if ok:
+                self.auth_state.set_text("SIGNED IN")
+                self.auth_state.add_css_class("good")
+                self.next_btn.set_sensitive(True)
+                self.next_btn.add_css_class("primary")
+                self.say("SIGNED IN", "ok")
+            else:
+                self.auth_state.set_text("not signed in")
+
+        p = Gio.Subprocess.new(["claude", "auth", "status", "--json"],
+                               Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE)
+        p.communicate_utf8_async(None, None, done)
+        return True
+
+    # ------------------------------------------------------------ 4
+    def step_voice(self):
+        self.frame(3, "VOICE · LOCAL ONLY", [
+            btn("TEST MIC", self.test_mic), btn("TEST VOICE", self.test_voice),
+            btn("FINISH", self.finish, primary=True)])
+        self.body.append(lbl(
+            "The listener types what you say into the orchestrator as [voice] ... There is no wake "
+            "word: it hears the room, so mute it on calls (SUPER+SHIFT+M). Speech recognition and "
+            "the spoken replies run on this machine.", "p", wrap=True))
+        row = Gtk.Box(spacing=8)
+        row.add_css_class("kv")
+        row.append(lbl("MICROPHONE", "k"))
+        self.srcs = sources() or [("", "default")]
+        self.mic = Gtk.DropDown.new_from_strings([d for _, d in self.srcs])
+        self.mic.set_hexpand(True)
+        pref = next((i for i, (n, _) in enumerate(self.srcs) if n.startswith("alsa_input")), 0)
+        self.mic.set_selected(pref)
+        self.mic.connect("notify::selected", lambda *_: self.start_level())
+        row.append(self.mic)
+        self.body.append(row)
+        row = Gtk.Box(spacing=8)
+        row.add_css_class("kv")
+        row.append(lbl("LEVEL", "k"))
+        self.meter = Gtk.LevelBar(min_value=0, max_value=100, hexpand=True, valign=Gtk.Align.CENTER)
+        row.append(self.meter)
+        self.body.append(row)
+        self.heard = self.kv("HEARD", "TEST MIC records 4 s and shows the transcript")
+        row = Gtk.Box(spacing=8)
+        row.add_css_class("kv")
+        row.append(lbl("LISTEN AT LOGIN", "k"))
+        self.listen_sw = Gtk.Switch(active=True, halign=Gtk.Align.START)
+        row.append(self.listen_sw)
+        self.body.append(row)
+        self.start_level()
+
+    def source(self):
+        i = self.mic.get_selected()
+        return self.srcs[i][0] if 0 <= i < len(self.srcs) else ""
+
+    def start_level(self):
+        self.stop_level()
+        env = dict(os.environ, HUD_SOURCE=self.source()) if self.source() else None
+        try:
+            self.level_proc = subprocess.Popen(["magi-listen", "--level"], stdout=subprocess.PIPE, text=True, env=env)
+        except OSError:
+            return
+        ch = GLib.IOChannel.unix_new(self.level_proc.stdout.fileno())
+
+        def read(_c, cond):
+            line = self.level_proc.stdout.readline() if self.level_proc else ""
+            if not line:
+                return False
+            try:
+                self.meter.set_value(float(line))
+            except ValueError:
+                pass
+            return True
+
+        GLib.io_add_watch(ch, GLib.PRIORITY_DEFAULT, GLib.IOCondition.IN | GLib.IOCondition.HUP, read)
+
+    def stop_level(self):
+        if self.level_proc:
+            self.level_proc.terminate()
+            self.level_proc = None
+
+    def test_mic(self):
+        self.heard.set_text("listening for 4 s... speak now")
+        self.say("RECORDING", "warn")
+        env = dict(os.environ)
+        if self.source():
+            env["HUD_SOURCE"] = self.source()
+        launcher = Gio.SubprocessLauncher.new(Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE)
+        for k, v in env.items():
+            launcher.setenv(k, v, True)
+        p = launcher.spawnv(["magi-listen", "--once", "4"])
+
+        def done(p, res):
+            try:
+                _, out, _ = p.communicate_utf8_finish(res)
+            except GLib.Error:
+                out = ""
+            self.heard.set_text((out or "").strip() or "(nothing heard)")
+            self.say("LOCAL TRANSCRIPT", "ok")
+
+        p.communicate_utf8_async(None, None, done)
+
+    def test_voice(self):
+        subprocess.Popen(["hud-say", "MAGI voice online. Say what you want done."],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.say("SPEAKING · LOCAL PIPER VOICE", "ok")
+
+    def finish(self):
+        self.stop_level()
+        if self.source():
+            set_conf("SOURCE", self.source())
+        on = self.listen_sw.get_active()
+        set_conf("VOICE", "1" if on else "0")
+        subprocess.run(["magi-agent", "voice", "on" if on else "off"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        touch("setup-done")
+        subprocess.Popen(["notify-send", "-a", "MAGI", "PILOT SETUP COMPLETE",
+                          "SUPER+` opens the orchestrator. " + ("Say what you want done." if on else "Type what you want done.")],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.get_application().quit()
+
+
+class App(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="magi.pilot.setup", flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+
+    def do_activate(self):
+        prov = Gtk.CssProvider()
+        prov.load_from_string(CSS)
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), prov, Gtk.STYLE_PROVIDER_PRIORITY_USER)
+        win = self.get_active_window() or Pilot(self)
+        win.present()
+
+
+if __name__ == "__main__":
+    GLib.set_prgname("magi-pilot-setup")
+    sys.exit(App().run([sys.argv[0]]))

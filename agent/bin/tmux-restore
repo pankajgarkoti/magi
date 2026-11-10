@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""Rebuild the tmux layout saved by tmux-snapshot (run at boot by tmux-restore.service).
+
+Idempotent: a window is only created if its session has no window with that name, so it is
+safe to run while tmux is already up (e.g. you opened a terminal first). Claude panes come
+back with `claude --resume <id>`; when that exits you land in a shell in the same folder.
+
+  tmux-restore              restore from ~/.local/state/tmux-snapshot/layout.json
+  tmux-restore FILE         restore from an older snapshot (see history/)
+  tmux-restore --dry-run    print what it would do
+"""
+import json, os, pathlib, shlex, subprocess, sys
+
+HOME = pathlib.Path.home()
+STATE = HOME / ".local/state/tmux-snapshot"
+LOG = STATE / "restore.log"
+
+
+def tmux(*args, check=False):
+    r = subprocess.run(["tmux", *args], capture_output=True, text=True)
+    if check and r.returncode:
+        raise RuntimeError(f"tmux {' '.join(args)}: {r.stderr.strip()}")
+    return r.stdout if r.returncode == 0 else None
+
+
+def pane_cmd(p):
+    if p["kind"] == "claude":
+        cmd = ["claude", "--resume", p["session_id"], *p.get("flags", [])]
+        return " ".join(shlex.quote(c) for c in cmd) + "; exec bash"
+    if p["kind"] == "command":
+        c = p["command"]
+        return c if "exec bash" in c else f"{c}; exec bash"
+    return None  # plain shell
+
+
+def main(argv):
+    dry = "--dry-run" in argv
+    files = [a for a in argv if not a.startswith("--")]
+    src = pathlib.Path(files[0]) if files else STATE / "layout.json"
+    if not src.exists():
+        print(f"no snapshot at {src}")
+        if not dry:
+            (pathlib.Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "tmux-restored").touch()
+        return 0
+    snap = json.loads(src.read_text())
+    log = []
+
+    def existing(session):
+        out = tmux("list-windows", "-t", f"={session}", "-F", "#W")
+        return None if out is None else set(out.splitlines())
+
+    # A grouped session (code-1 in group "code") answers to its group name only via a member.
+    def target_session(session):
+        if tmux("has-session", "-t", f"={session}") is not None:
+            return session
+        out = tmux("list-sessions", "-F", "#{session_name}\t#{session_group}") or ""
+        for line in out.splitlines():
+            name, group = (line.split("\t") + [""])[:2]
+            if group == session:
+                return name
+        return None
+
+    for w in snap["windows"]:
+        session, name, panes = w["session"], w["name"], w["panes"]
+        tgt = target_session(session)
+        if tgt and name in (existing(tgt) or set()):
+            continue
+        first = panes[0]
+        cmd = pane_cmd(first)
+        log.append(f"{session}:{name} <- {cmd or 'shell'} in {first['cwd']}")
+        if dry:
+            continue
+        extra = [cmd] if cmd else []
+        if tgt is None:
+            tmux("new-session", "-d", "-s", session, "-n", name, "-c", first["cwd"], *extra, check=True)
+            tgt = session
+        else:
+            tmux("new-window", "-d", "-t", f"={tgt}:", "-n", name, "-c", first["cwd"], *extra, check=True)
+        for p in panes[1:]:
+            c = pane_cmd(p)
+            tmux("split-window", "-d", "-t", f"={tgt}:={name}", "-c", p["cwd"], *([c] if c else []))
+            log.append(f"  + pane <- {c or 'shell'} in {p['cwd']}")
+        if len(panes) > 1:
+            tmux("select-layout", "-t", f"={tgt}:={name}", "tiled")
+        tmux("set-option", "-w", "-t", f"={tgt}:={name}", "automatic-rename", "off")
+
+    # Put windows back in their saved order.
+    if not dry:
+        for session in {w["session"] for w in snap["windows"]}:
+            tgt = target_session(session)
+            if tgt:
+                tmux("move-window", "-r", "-t", f"={tgt}:")
+
+    if not dry:  # lets tmux-snapshot start saving again (cleared at every boot)
+        (pathlib.Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "tmux-restored").touch()
+
+    msg = "\n".join(log) or "nothing to restore: every saved window already exists"
+    print(msg)
+    if not dry:
+        STATE.mkdir(parents=True, exist_ok=True)
+        with LOG.open("a") as f:
+            import time
+            f.write(f"--- {time.strftime('%Y-%m-%d %H:%M:%S')} from {src} (saved {snap.get('saved_at')})\n{msg}\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

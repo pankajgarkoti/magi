@@ -39,12 +39,20 @@ hl.on("hyprland.start", function()
     -- MAGI control centre and overview stay resident (hidden) so they open instantly
     hl.exec_cmd("magi --daemon")
     hl.exec_cmd("magi-overview --daemon")
-    -- The MAGI scratchpad terminal waits, hidden, on its special workspace
-    hl.exec_cmd(terminal .. " --class magi-scratch -e tmux new-session -A -s magi")
+    -- The MAGI console waits, hidden, on its special workspace (SUPER + `): tmux session
+    -- "magi", window 1 is the orchestrator when the agent layer is on (magi-agent)
+    hl.exec_cmd(terminal .. [[ --class magi-scratch -e sh -c 'command -v magi-agent >/dev/null && exec magi-agent console; exec tmux new-session -A -s magi']])
+    -- Agent layer: first login opens PILOT SETUP; later logins make sure the orchestrator runs
+    hl.exec_cmd("sh -c 'command -v magi-agent >/dev/null && exec magi-agent firstrun'")
 end)
 
--- GDM starts the session without ~/.local/bin on PATH; the MAGI tools live there
-hl.env("PATH", HOME .. "/.local/bin:" .. (os.getenv("PATH") or "/usr/local/bin:/usr/bin"))
+-- GDM starts the session without ~/.local/bin on PATH, where install.sh links the MAGI tools.
+-- (~/.config/environment.d/50-magi-path.conf does the same for systemd user units; the MAGI
+-- image puts the tools in /usr/bin and needs neither.)
+local login_path = os.getenv("PATH") or "/usr/local/bin:/usr/bin"
+if not (":" .. login_path .. ":"):find(":" .. HOME .. "/.local/bin:", 1, true) then
+    hl.env("PATH", HOME .. "/.local/bin:" .. login_path)
+end
 hl.env("XCURSOR_SIZE", "24")
 hl.env("HYPRCURSOR_SIZE", "24")
 -- one cursor everywhere: Hyprland, GTK (gsettings), XWayland and Qt all use Adwaita
@@ -188,6 +196,7 @@ hl.bind(mod .. " + SHIFT + S", hl.dsp.exec_cmd(settings .. " sound"))
 
 -- MAGI control centre (network, bluetooth, sound, display, power, theme); files
 hl.bind(mod .. " + SHIFT + Space", hl.dsp.exec_cmd("magi"))
+hl.bind(mod .. " + SHIFT + M",     hl.dsp.exec_cmd("magi-agent voice toggle"))
 hl.bind(mod .. " + E",             hl.dsp.exec_cmd("nautilus --new-window"))
 hl.bind(mod .. " + O",             hl.dsp.exec_cmd("magi-overview"))
 -- ranger in Alacritty (SUPER+SHIFT+E stays "exit Hyprland")
@@ -228,6 +237,7 @@ hl.window_rule({ name = "float-settings", match = { class = "^(org.gnome.Setting
 hl.window_rule({ name = "eva-pickers", match = { class = "^(eva-wifi|eva-bluetooth)$" }, float = true, pin = true, size = "520 600", move = "monitor_w-526 32", border_size = 0, no_anim = true, no_shadow = true })
 -- MAGI control centre centred; overview a large centred panel
 hl.window_rule({ name = "magi", match = { class = "^magi$" }, float = true, pin = true, center = true, size = "880 600", border_size = 0, no_anim = true })
+hl.window_rule({ name = "magi-pilot-setup", match = { class = "^(magi-pilot-setup|magi\\.pilot\\.setup)$" }, float = true, center = true, size = "760 560", border_size = 0, no_anim = true })
 hl.window_rule({ name = "magi-overview", match = { class = "^magi-overview$" }, float = true, pin = true, center = true, size = "monitor_w*0.8 monitor_h*0.84", border_size = 0, no_anim = true })
 -- ranger (SUPER+R, magi TOOLS): a floating, centred terminal file manager
 hl.window_rule({ name = "eva-files", match = { class = "^eva-files$" }, float = true, center = true, size = "monitor_w*0.62 monitor_h*0.66" })

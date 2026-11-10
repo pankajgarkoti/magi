@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# hud-say: speak a short status line with the local Piper voice (nothing leaves the machine).
+# The listener ignores the mic while this talks. One voice at a time. Pauses Spotify if it plays.
+#   hud-say "Build finished. Want it merged?"
+set -u
+text="${*:-}"
+[ -n "$text" ] || { echo "usage: hud-say TEXT" >&2; exit 2; }
+self=$(readlink -f "${BASH_SOURCE[0]}")
+. "$(dirname "$self")/magi-voice-env" || exit 1
+CONF=${XDG_CONFIG_HOME:-$HOME/.config}/magi/agent.conf
+VOICE_MODEL=
+[ -f "$CONF" ] && . "$CONF"
+model=${VOICE_MODEL:-$VOICE_HOME/voices/en_US-ljspeech-medium.onnx}
+run="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+exec 9>"$run/hud-say.lock"
+flock -w 120 9 || exit 1
+dest=org.mpris.MediaPlayer2.spotify obj=/org/mpris/MediaPlayer2 player=org.mpris.MediaPlayer2.Player
+paused=0
+if gdbus call --session --dest "$dest" --object-path "$obj" --method org.freedesktop.DBus.Properties.Get "$player" PlaybackStatus 2>/dev/null | grep -q Playing; then
+  gdbus call --session --dest "$dest" --object-path "$obj" --method "$player.Pause" >/dev/null 2>&1 && paused=1
+  sleep 0.7
+fi
+wav=$(mktemp --suffix=.wav)
+lock="$run/hud-speaking"
+touch "$lock"
+trap 'rm -f "$wav" "$lock"' EXIT
+printf '%s' "$text" | "$VOICE_PY" -m piper --model "$model" --length-scale 1.05 --output_file "$wav" >/dev/null 2>&1 \
+  && paplay ${HUD_SINK:+--device="$HUD_SINK"} "$wav"
+rc=$?
+sleep 0.6
+rm -f "$lock"
+[ "$paused" = 1 ] && gdbus call --session --dest "$dest" --object-path "$obj" --method "$player.Play" >/dev/null 2>&1
+exit $rc

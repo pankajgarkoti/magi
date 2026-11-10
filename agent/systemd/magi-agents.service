@@ -1,0 +1,17 @@
+[Unit]
+Description=MAGI orchestrator: tmux session "magi" (window 1 orchestrator, window "listen" for the local listener)
+Documentation=https://github.com/pankajgarkoti/magi
+After=pipewire.service wireplumber.service
+Wants=pipewire.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# The tmux server and the agents live in this unit's cgroup, so a desktop crash or logout
+# doesn't take them down. Stopping the unit leaves them running too (magi-agent off).
+KillMode=process
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env magi-agent start
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,278 @@
+#!/usr/bin/env bash
+# magi-agent: the MAGI orchestrator. You talk (voice or typing) to one Claude Code session in
+# tmux window 1 ("orchestrator") of session "magi"; it runs the other agents.
+#
+#   magi-agent status [--waybar|--json]   state of the orchestrator, agents and listener
+#   magi-agent console                    open the orchestrator console (attach to tmux "magi")
+#   magi-agent on | off                   start at every login, or stop doing that (opt-out)
+#   magi-agent voice on|off|toggle        the local listener (off = muted, nothing is recorded)
+#   magi-agent setup                      the PILOT SETUP window (install, sign in, voice)
+#   magi-agent install-claude             run Anthropic's official Claude Code installer
+#   magi-agent start                      (systemd) build the tmux session; idempotent
+#   magi-agent orchestrator               (tmux window 1) run the orchestrator, or explain what is missing
+#   magi-agent firstrun                   (Hyprland autostart) open setup on the first login
+#
+# Settings: ~/.config/magi/agent.conf (ENABLED, VOICE, SOURCE, MODEL, CONSOLE_AT_LOGIN). Nothing here sends
+# anything anywhere except Claude Code itself; the listener and the voice are local.
+set -uo pipefail
+export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+# tmux refuses to run without a UTF-8 locale (the control centre calls us with LC_ALL=C)
+case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in *UTF-8*|*utf8*) ;; *) export LC_ALL=C.UTF-8 ;; esac
+SESSION=magi
+CONF_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/magi
+CONF=$CONF_DIR/agent.conf
+STATE=${XDG_STATE_HOME:-$HOME/.local/state}/magi/agent
+RUN=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+self=$(readlink -f "${BASH_SOURCE[0]}")
+here=$(dirname "$self")
+mkdir -p "$STATE"
+
+# the MAGI edition of ORCHESTRATOR.md: image, install.sh checkout, or next to this script
+orch_md() {
+  local c
+  for c in /usr/share/magi/agent/ORCHESTRATOR.md "$here/../ORCHESTRATOR.md" "$HOME/.local/share/magi/agent/ORCHESTRATOR.md"; do
+    [ -f "$c" ] && { readlink -f "$c"; return; }
+  done
+}
+
+ENABLED=0 VOICE=1 SOURCE= MODEL=base.en CONSOLE_AT_LOGIN=1
+# shellcheck disable=SC1090
+[ -f "$CONF" ] && . "$CONF"
+
+set_conf() {  # set_conf KEY VALUE
+  mkdir -p "$CONF_DIR"; touch "$CONF"
+  if grep -q "^$1=" "$CONF"; then sed -i "s|^$1=.*|$1=$2|" "$CONF"; else echo "$1=$2" >> "$CONF"; fi
+}
+
+have_claude() { command -v claude >/dev/null 2>&1; }
+signed_in() {
+  have_claude || return 1
+  claude auth status --json 2>/dev/null | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("loggedIn") else 1)' 2>/dev/null
+}
+online() {
+  # NetworkManager's own connectivity check result; no extra request from here
+  local c; c=$(nmcli -t networking connectivity 2>/dev/null) || return 0
+  [ "$c" = full ] || [ "$c" = unknown ]
+}
+tmux_has() { tmux has-session -t "=$SESSION" 2>/dev/null; }
+win_exists() { tmux list-windows -t "=$SESSION" -F '#W' 2>/dev/null | grep -qx "$1"; }
+muted() { [ -e "$STATE/muted" ] || [ "$VOICE" != 1 ]; }
+listener_up() { win_exists listen && tmux list-panes -t "=$SESSION:=listen" -F '#{pane_dead}' 2>/dev/null | grep -qx 0; }
+
+ensure_listener() {
+  muted && return 0
+  command -v magi-listen >/dev/null || return 0
+  win_exists listen && return 0
+  tmux new-window -d -t "=$SESSION:" -n listen "magi-listen '=$SESSION:=orchestrator'"
+}
+
+cmd_start() {
+  if ! tmux_has; then
+    # after a reboot: bring back the previous windows (claude --resume ...) first
+    if command -v tmux-restore >/dev/null && [ -s "$HOME/.local/state/tmux-snapshot/layout.json" ]; then
+      tmux-restore >/dev/null 2>&1 || true
+    fi
+  fi
+  if ! tmux_has; then
+    tmux new-session -d -s "$SESSION" -n orchestrator -c "$HOME" "magi-agent orchestrator"
+  elif ! win_exists orchestrator; then
+    tmux new-window -d -t "=$SESSION:1" -n orchestrator -c "$HOME" "magi-agent orchestrator" 2>/dev/null ||
+      tmux new-window -d -t "=$SESSION:" -n orchestrator -c "$HOME" "magi-agent orchestrator"
+  fi
+  # restored windows come back in order; make sure nothing else holds window 1
+  local idx; idx=$(tmux list-windows -t "=$SESSION" -F '#{window_index} #W' | awk '$2=="orchestrator"{print $1; exit}')
+  if [ -n "$idx" ] && [ "$idx" != 1 ]; then
+    tmux swap-window -s "=$SESSION:$idx" -t "=$SESSION:1" 2>/dev/null || tmux move-window -s "=$SESSION:$idx" -t "=$SESSION:1" 2>/dev/null || true
+  fi
+  tmux set-option -w -t "=$SESSION:=orchestrator" automatic-rename off 2>/dev/null
+  ensure_listener
+  touch "$RUN/tmux-restored"   # lets tmux-snapshot save again
+}
+
+banner() {
+  local c=$'\e[38;5;208m' d=$'\e[2m' b=$'\e[1m' r=$'\e[0m'
+  printf '\e[H\e[2J%s' "$c"
+  cat <<'EOF'
+ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   MAGI · ORCHESTRATOR              window 1 · session magi
+ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EOF
+  printf '%s\n' "$r"
+  printf '   %s%s%s\n\n' "$b" "$1" "$r"
+  shift
+  for l in "$@"; do printf '   %s%s%s\n' "$d" "$l" "$r"; done
+}
+
+cmd_orchestrator() {
+  local md; md=$(orch_md)
+  while true; do
+    if ! have_claude; then
+      banner "Claude Code is not installed." "Open PILOT SETUP: magi-agent setup  (or the AGENTS page in the control centre)" \
+        "It runs Anthropic's official installer; nothing is bundled with MAGI." "" "Waiting... (this window checks every 5 s)"
+      sleep 5; continue
+    fi
+    if ! signed_in; then
+      if ! online; then
+        banner "OFFLINE" "Claude needs the network. The listener and the desktop keep working." "Waiting for a connection..."
+        sleep 10; continue
+      fi
+      banner "Sign in to your Claude account." "A browser opens; this window continues when you are signed in." ""
+      claude auth login || { echo; echo "   Sign-in did not finish. Retrying in 10 s (Ctrl+C for a shell)."; sleep 10; }
+      continue
+    fi
+    if ! online; then
+      banner "OFFLINE" "Claude needs the network. The listener and the desktop keep working." "Waiting for a connection..."
+      sleep 10; continue
+    fi
+    local args=()
+    [ -n "$md" ] && args+=(--append-system-prompt-file "$md")
+    claude "${args[@]}"
+    echo; echo "   The orchestrator exited. Enter restarts it, Ctrl+C gives you a shell."
+    read -r _ || true
+  done
+}
+
+# "%3 busy" lines for every Claude session in a tmux pane; the orchestrator's pane is marked
+agent_rows() {
+  python3 - "$SESSION" <<'PY'
+import json, os, pathlib, re, subprocess, sys, time
+WAIT = re.compile(r"Enter to select|Do you want|Allow this|Esc to cancel|\[y/N\]|\(y/n\)", re.I)
+def sh(*a): return subprocess.run(a, capture_output=True, text=True).stdout
+panes = {}
+for line in sh("tmux", "list-panes", "-a", "-F", "#{pane_id}\t#S\t#W\t#{pane_pid}").splitlines():
+    p = line.split("\t")
+    if len(p) == 4: panes[p[0]] = (p[1], p[2])
+now = time.time() * 1000
+for f in (pathlib.Path.home() / ".claude/sessions").glob("*.json"):
+    try: d = json.loads(f.read_text())
+    except Exception: continue
+    pid, tm = d.get("pid"), d.get("tmux") or ""
+    if not pid or not os.path.exists(f"/proc/{pid}") or "%" not in tm: continue
+    pane = "%" + tm.split("%", 1)[1]
+    if pane not in panes: continue
+    sess, win = panes[pane]
+    st = d.get("status") or "idle"
+    if WAIT.search(sh("tmux", "capture-pane", "-p", "-t", pane)[-3000:]): st = "asking"
+    mins = int((now - d.get("statusUpdatedAt", now)) / 60000)
+    print(f"{win}\t{st}\t{mins}\t{sess}")
+PY
+}
+
+cmd_status() {
+  local mode=${1:-text} orch=OFF lis=OFF n=0 asking=0 rows="" tip="" cls=off
+  if [ "$ENABLED" != 1 ]; then
+    if [ -e "$STATE/setup-done" ]; then orch=OFF; else orch=SETUP; fi
+  elif ! have_claude; then orch=SETUP
+  elif ! tmux_has || ! win_exists orchestrator; then orch=DOWN
+  else
+    rows=$(agent_rows)
+    local o; o=$(awk -F'\t' '$1=="orchestrator"{print $2; exit}' <<< "$rows")
+    case "$o" in
+      busy) orch=WORKING ;; asking) orch=ASKING ;; idle|waiting) orch=IDLE ;;
+      *) if online; then orch=SIGN-IN; signed_in && orch=STARTING; else orch=OFFLINE; fi ;;
+    esac
+    [ -n "$o" ] && ! online && orch=OFFLINE
+    n=$(awk -F'\t' '$1!="orchestrator"' <<< "$rows" | grep -c . || true)
+    asking=$(awk -F'\t' '$2=="asking"' <<< "$rows" | grep -c . || true)
+    tip=$(awk -F'\t' '{printf "%-14s %-8s %sm\\n", $1, toupper($2), $3}' <<< "$rows")
+  fi
+  if [ "$ENABLED" = 1 ]; then
+    if muted; then lis=MUTED; elif listener_up; then lis=LISTEN; else lis=DOWN; fi
+  fi
+  case "$orch" in WORKING) cls=busy ;; ASKING) cls=asking ;; IDLE|STARTING) cls=idle ;; OFFLINE|DOWN|SIGN-IN) cls=warn ;; SETUP) cls=setup ;; esac
+  [ "$asking" -gt 0 ] && cls=asking
+  case "$mode" in
+    --waybar)
+      local text="◉ $orch"
+      [ "$ENABLED" = 1 ] && text="$text · $n AGENT$([ "$n" = 1 ] || echo S) · $([ "$lis" = LISTEN ] && echo '●' || echo '○') $lis"
+      [ "$asking" -gt 0 ] && text="$text · $asking ASKING"
+      local t="ORCHESTRATOR $orch · LISTENER $lis\\n${tip}Click: console · Right-click: mute · Middle: control centre"
+      printf '{"text": "%s", "class": "%s", "tooltip": "%s"}\n' "$text" "$cls" "$t" ;;
+    --json) ROWS=${rows:-} python3 -c 'import json, os, sys
+o, n, a, l, e = sys.argv[1:6]
+w = [dict(zip(("name", "state", "idle", "session"), r.split("\t"))) for r in os.environ["ROWS"].splitlines() if r.count("\t") == 3]
+print(json.dumps({"orchestrator": o, "agents": int(n), "asking": int(a), "listener": l, "enabled": e == "1", "windows": w}))' \
+              "$orch" "$n" "$asking" "$lis" "$ENABLED" ;;
+    *) echo "orchestrator: $orch"; echo "listener:     $lis"; echo "agents:       $n ($asking asking)"
+       [ -n "$tip" ] && printf '%b' "$tip" | sed 's/^/  /' ;;
+  esac
+}
+
+cmd_console() {
+  if [ "$ENABLED" = 1 ]; then systemctl --user start magi-agents.service 2>/dev/null || cmd_start; fi
+  if tmux_has; then
+    tmux select-window -t "=$SESSION:=orchestrator" 2>/dev/null
+    exec tmux attach -t "=$SESSION"
+  fi
+  exec tmux new-session -A -s "$SESSION"
+}
+
+cmd_on() {
+  set_conf ENABLED 1
+  systemctl --user enable --now magi-agents.service tmux-snapshot.timer tmux-reap-stale.timer >/dev/null 2>&1 || cmd_start
+  echo "MAGI orchestrator on: it starts at every login (magi-agent off to stop)."
+}
+cmd_off() {
+  set_conf ENABLED 0
+  systemctl --user disable --now magi-agents.service tmux-snapshot.timer tmux-reap-stale.timer >/dev/null 2>&1 || true
+  tmux kill-window -t "=$SESSION:=listen" 2>/dev/null || true
+  echo "MAGI orchestrator off. Running agents were left alone (tmux session magi)."
+}
+cmd_voice() {
+  case "${1:-toggle}" in
+    on) set_conf VOICE 1; rm -f "$STATE/muted"; VOICE=1; tmux_has && ensure_listener ;;
+    off) touch "$STATE/muted"; tmux kill-window -t "=$SESSION:=listen" 2>/dev/null || true ;;
+    toggle) if muted; then cmd_voice on; else cmd_voice off; fi; return ;;
+    *) echo "magi-agent voice on|off|toggle" >&2; return 2 ;;
+  esac
+  pkill -RTMIN+9 -x waybar 2>/dev/null || true
+  muted && echo "listener muted" || echo "listener on"
+}
+
+cmd_install_claude() {
+  # Anthropic's official native installer (per-user, ~/.local/bin/claude). Claude Code is not
+  # part of MAGI; its licence: https://code.claude.com/docs/en/legal-and-compliance
+  local url=${MAGI_CLAUDE_INSTALL_URL:-https://claude.ai/install.sh}
+  have_claude && { echo "Claude Code already installed: $(command -v claude)"; return 0; }
+  echo "Running Anthropic's installer: curl -fsSL $url | bash"
+  curl -fsSL "$url" | bash
+}
+
+cmd_firstrun() {
+  # the tmux server may predate the desktop: give new windows the session's display variables
+  if tmux_has; then
+    local v; for v in WAYLAND_DISPLAY DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP; do
+      [ -n "${!v:-}" ] && tmux set-environment -g "$v" "${!v}"
+    done
+  fi
+  if [ "$ENABLED" = 1 ]; then
+    systemctl --user start magi-agents.service 2>/dev/null || cmd_start
+    # the orchestrator is the primary way in: drop its console down at login (CONSOLE_AT_LOGIN=0 to stop)
+    if [ "${CONSOLE_AT_LOGIN:-1}" = 1 ] && command -v hyprctl >/dev/null; then
+      sleep 3
+      tmux select-window -t "=$SESSION:=orchestrator" 2>/dev/null
+      hyprctl -j monitors 2>/dev/null | python3 -c 'import json, sys
+sys.exit(0 if any((m.get("specialWorkspace") or {}).get("name") == "special:magi" for m in json.load(sys.stdin)) else 1)' ||
+        hyprctl dispatch 'hl.dsp.workspace.toggle_special("magi")' >/dev/null 2>&1
+    fi
+    return 0
+  fi
+  if [ ! -e "$STATE/setup-done" ] && [ ! -e "$STATE/setup-dismissed" ] && command -v magi-pilot-setup >/dev/null; then
+    sleep 2; exec magi-pilot-setup
+  fi
+}
+
+case "${1:-status}" in
+  status) cmd_status "${2:-text}" ;;
+  console) cmd_console ;;
+  on) cmd_on ;;
+  off) cmd_off ;;
+  voice) cmd_voice "${2:-toggle}" ;;
+  setup) exec magi-pilot-setup ;;
+  install-claude) cmd_install_claude ;;
+  start) cmd_start ;;
+  orchestrator) cmd_orchestrator ;;
+  firstrun) cmd_firstrun ;;
+  -h|--help|help) sed -n '2,17p' "$self" | sed 's/^# \{0,1\}//' ;;
+  *) echo "magi-agent: unknown command $1 (try --help)" >&2; exit 2 ;;
+esac

@@ -22,6 +22,21 @@ tooltip { background: @base; border: 1px solid @accent; }
   font-weight: bold;
   letter-spacing: 2px;
 }
+/* orchestrator + listener state (magi-agent status --waybar) */
+#custom-magi-agent {
+  padding: 0 10px;
+  color: @dim;
+  background: alpha(@surface0, 0.55);
+  border-right: 1px solid alpha(@accent, 0.35);
+  font-weight: bold;
+  letter-spacing: 1px;
+}
+#custom-magi-agent.idle   { color: @c1; }
+#custom-magi-agent.busy   { color: @accent2; border-bottom: 2px solid @accent2; }
+#custom-magi-agent.asking { color: @base; background: @warn; }
+#custom-magi-agent.warn   { color: @warn; }
+#custom-magi-agent.setup  { color: @accent; border-bottom: 2px dashed @accent; }
+#custom-magi-agent.off    { color: alpha(@dim, 0.6); }
 #workspaces button {
   padding: 0 10px;
   color: @dim;

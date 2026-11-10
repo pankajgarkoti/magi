@@ -1,0 +1,8 @@
+[Unit]
+Description=Save the tmux layout so magi-agent can restore it after a reboot
+After=magi-agents.service
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env tmux-snapshot

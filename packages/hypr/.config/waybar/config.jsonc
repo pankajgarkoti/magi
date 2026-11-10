@@ -5,6 +5,7 @@
   "spacing": 0,
   "modules-left": [
     "custom/magi",
+    "custom/magi-agent",
     "hyprland/workspaces",
     "hyprland/submap",
     "hyprland/window"
@@ -88,6 +89,15 @@
     "format": " ⬢ {} MODE ",
     "tooltip": false,
     "max-length": 24
+  },
+  "custom/magi-agent": {
+    "exec": "command -v magi-agent >/dev/null && exec magi-agent status --waybar",
+    "return-type": "json",
+    "interval": 3,
+    "signal": 9,
+    "on-click": "hyprctl dispatch 'hl.dsp.workspace.toggle_special(\"magi\")'",
+    "on-click-right": "magi-agent voice toggle",
+    "on-click-middle": "magi agents"
   },
   "custom/magi": {
     "format": "MAGI",

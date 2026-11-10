@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""Save the tmux layout so tmux-restore can rebuild it after a reboot.
+
+For every window: session (group name for grouped sessions), index, name, and each pane's
+cwd plus how to restart it:
+  - Claude Code panes  -> claude --resume <sessionId> with the same permission flags
+  - panes with a start command (the listener, servers, ...) -> that command
+  - nvim panes         -> nvim
+  - anything else      -> a shell in the same folder
+
+Writes ~/.local/state/tmux-snapshot/layout.json (keeps the last 30 copies in history/).
+Never overwrites a snapshot when the tmux server isn't running, so a fresh boot can't
+wipe the layout before it is restored. Run by tmux-snapshot.timer every minute.
+"""
+import json, os, pathlib, shlex, shutil, subprocess, sys, time
+
+HOME = pathlib.Path.home()
+STATE = HOME / ".local/state/tmux-snapshot"
+KEEP_FLAGS_WITH_VALUE = {"--permission-mode", "--model", "--effort", "--name", "--add-dir",
+                         "--append-system-prompt-file"}
+KEEP_FLAGS = {"--dangerously-skip-permissions", "--chrome", "--verbose"}
+
+
+def tmux(*args):
+    r = subprocess.run(["tmux", *args], capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else None
+
+
+def claude_sessions():
+    """pane id -> (sessionId, cwd, pid) from Claude's own status files."""
+    out = {}
+    for f in (HOME / ".claude/sessions").glob("*.json"):
+        try:
+            d = json.loads(f.read_text())
+        except Exception:
+            continue
+        pid, tm = d.get("pid"), d.get("tmux") or ""
+        if not pid or "%" not in tm or not os.path.exists(f"/proc/{pid}"):
+            continue
+        out[tm.split(".")[-1]] = (d.get("sessionId"), d.get("cwd"), pid)
+    return out
+
+
+def claude_flags(pid):
+    try:
+        argv = pathlib.Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+    except Exception:
+        return []
+    argv = [a.decode(errors="replace") for a in argv if a]
+    flags, i = [], 1
+    while i < len(argv):
+        a = argv[i]
+        key = a.split("=", 1)[0]
+        if key in KEEP_FLAGS:
+            flags.append(a)
+        elif key in KEEP_FLAGS_WITH_VALUE:
+            if "=" in a:
+                flags.append(a)
+            elif i + 1 < len(argv):
+                flags += [a, argv[i + 1]]
+                i += 1
+        i += 1
+    return flags
+
+
+def main():
+    fmt = "\t".join(["#{session_name}", "#{session_group}", "#{window_id}", "#{window_index}",
+                     "#{window_name}", "#{pane_id}", "#{pane_index}", "#{pane_current_path}",
+                     "#{pane_current_command}", "#{pane_start_command}", "#{window_active}"])
+    # Until tmux-restore has run this boot, the server may hold only a half-built layout
+    # (e.g. a terminal opened before the restore), and saving it would lose the real one.
+    if not (pathlib.Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "tmux-restored").exists():
+        return 0
+    raw = tmux("list-panes", "-a", "-F", fmt)
+    if not raw:
+        return 0  # no server: keep the last snapshot
+    sessions = claude_sessions()
+    windows, seen = {}, set()
+    for line in raw.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 11:
+            continue
+        sname, group, wid, widx, wname, pid_, pidx, cwd, cur, start, active = parts
+        session = group or sname
+        if (wid, pid_) in seen:  # grouped sessions list the same window twice
+            continue
+        seen.add((wid, pid_))
+        pane = {"cwd": cwd}
+        if pid_ in sessions and sessions[pid_][0]:
+            sid, scwd, cpid = sessions[pid_]
+            pane.update(kind="claude", session_id=sid, cwd=scwd or cwd, flags=claude_flags(cpid))
+        elif start:
+            if start.startswith('"') and start.endswith('"'):  # tmux shows it quoted
+                try:
+                    start = shlex.split(start)[0]
+                except ValueError:
+                    start = start[1:-1]
+            pane.update(kind="command", command=start)
+        elif cur in ("nvim", "vim"):
+            pane.update(kind="command", command=cur)
+        else:
+            pane.update(kind="shell")
+        w = windows.setdefault(wid, {"session": session, "index": int(widx), "name": wname, "panes": []})
+        w["panes"].append(pane)
+    if not windows:
+        return 0
+    snap = {"saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "windows": sorted(windows.values(), key=lambda w: (w["session"], w["index"]))}
+    STATE.mkdir(parents=True, exist_ok=True)
+    (STATE / "history").mkdir(exist_ok=True)
+    new = json.dumps(snap["windows"], sort_keys=True)
+    cur_file = STATE / "layout.json"
+    try:
+        old = json.dumps(json.loads(cur_file.read_text())["windows"], sort_keys=True)
+    except Exception:
+        old = None
+    tmp = cur_file.with_suffix(".tmp")
+    tmp.write_text(json.dumps(snap, indent=1))
+    os.replace(tmp, cur_file)
+    if new != old:  # history only when the layout actually changed
+        shutil.copy(cur_file, STATE / "history" / time.strftime("layout-%Y%m%d-%H%M%S.json"))
+        hist = sorted((STATE / "history").glob("layout-*.json"))
+        for f in hist[:-30]:
+            f.unlink()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

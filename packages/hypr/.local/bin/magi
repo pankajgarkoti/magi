@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """magi: the MAGI control centre. One keyboard-first panel for the Evangelion Hyprland desktop.
 
-Sections: NETWORK (eva-wifi), BLUETOOTH (eva-bluetooth), SOUND, DISPLAY, POWER, THEME,
+Sections: AGENTS (orchestrator, listener, agent windows; magi-agent), NETWORK (eva-wifi), BLUETOOTH (eva-bluetooth), SOUND, DISPLAY, POWER, THEME,
 TOOLS (overview, files, clipboard, screenshots).
 Colours come only from ~/.config/hypr/themes/current/colors.css (plus the theme swatches,
 read from each theme's palette file), so `eva-theme` restyles it, live if it is open.
 
 Keys
-  Up/Down, j/k        move              1-7        jump to a section
+  Up/Down, j/k        move              1-8        jump to a section
   Left/Right, h/l     adjust a slider or option; Left on a plain row goes back to the sections
   Enter / Space       act (power actions ask once more: Enter again executes, Esc aborts)
   Tab                 sections <-> panel                 Esc       back / abort / close
@@ -81,6 +81,7 @@ THUMB_DIR = HOME + "/.cache/magi/thumbs"
 SETTINGS = ["env", "XDG_CURRENT_DESKTOP=GNOME", "gnome-control-center"]
 
 SECTIONS = [
+    ("agents", "AGENTS", "󰚩"),
     ("network", "NETWORK", "󰖩"),
     ("bluetooth", "BLUETOOTH", "󰂯"),
     ("sound", "SOUND", "󰕾"),
@@ -91,7 +92,8 @@ SECTIONS = [
 ]
 ALIASES = {"net": "network", "wifi": "network", "bt": "bluetooth", "audio": "sound",
            "volume": "sound", "screen": "display", "brightness": "display", "battery": "power",
-           "session": "power", "wallpaper": "theme", "walls": "theme", "files": "tools", "overview": "tools"}
+           "session": "power", "wallpaper": "theme", "walls": "theme", "files": "tools", "overview": "tools",
+           "agent": "agents", "orchestrator": "agents", "voice": "agents"}
 
 CSS = """
 @import url("file://%s");
@@ -115,16 +117,16 @@ window.magi { background: alpha(@base, 0.94); color: @text; border: 1px solid @a
   background-image: repeating-linear-gradient(135deg, alpha(@accent, 0.55) 0px, alpha(@accent, 0.55) 6px, transparent 6px, transparent 12px);
 }
 
-/* the three MAGI votes */
-.votes { padding: 10px 12px 10px 12px; border-bottom: 1px solid @surface1; }
-.vote { border: 1px solid @surface1; border-left: 3px solid @surface1; padding: 5px 10px; background: alpha(@surface0, 0.45); }
-.vote.ok { border-left-color: @good; }
-.vote.no { border-left-color: @bad; background: alpha(@bad, 0.08); }
-.vote .who { font-size: 11px; font-weight: 800; letter-spacing: 3px; color: @accent2; }
-.vote .what { font-size: 10px; letter-spacing: 1px; color: @dim; }
-.vote .verdict { font-size: 10px; font-weight: 800; letter-spacing: 2px; color: @dim; }
-.vote.ok .verdict { color: @good; }
-.vote.no .verdict { color: @bad; }
+/* status strip: orchestrator first, then the machine */
+.strip { padding: 10px 12px 10px 12px; border-bottom: 1px solid @surface1; }
+.stat { border: 1px solid @surface1; border-left: 3px solid @surface1; padding: 5px 10px; background: alpha(@surface0, 0.45); }
+.stat.ok { border-left-color: @good; }
+.stat.no { border-left-color: @bad; background: alpha(@bad, 0.08); }
+.stat .who { font-size: 11px; font-weight: 800; letter-spacing: 3px; color: @accent2; }
+.stat .what { font-size: 10px; letter-spacing: 1px; color: @dim; }
+.stat .verdict { font-size: 10px; font-weight: 800; letter-spacing: 2px; color: @dim; }
+.stat.ok .verdict { color: @good; }
+.stat.no .verdict { color: @bad; }
 
 /* section list */
 .side { padding: 8px 0; border-right: 1px solid @surface1; }
@@ -563,12 +565,12 @@ class Magi(Gtk.ApplicationWindow):
         haz.add_css_class("hazard")
         root.append(haz)
 
-        votes = Gtk.Box(spacing=8, homogeneous=True)
-        votes.add_css_class("votes")
-        self.votes = {}
-        for key, who in (("mel", "MELCHIOR-1"), ("bal", "BALTHASAR-2"), ("cas", "CASPER-3")):
+        strip = Gtk.Box(spacing=8, homogeneous=True)
+        strip.add_css_class("strip")
+        self.stats = {}
+        for key, who in (("orc", "ORCHESTRATOR"), ("sys", "SYSTEM"), ("net", "NETWORK")):
             v = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
-            v.add_css_class("vote")
+            v.add_css_class("stat")
             top = Gtk.Box(spacing=6)
             top.append(lbl(who, "who", hexpand=True))
             verdict = lbl("……", "verdict", xalign=1)
@@ -576,9 +578,9 @@ class Magi(Gtk.ApplicationWindow):
             v.append(top)
             what = lbl("--", "what", ellipsize=True)
             v.append(what)
-            votes.append(v)
-            self.votes[key] = (v, what, verdict)
-        root.append(votes)
+            strip.append(v)
+            self.stats[key] = (v, what, verdict)
+        root.append(strip)
 
         body = Gtk.Box(vexpand=True)
         root.append(body)
@@ -616,7 +618,7 @@ class Magi(Gtk.ApplicationWindow):
         foot.add_css_class("footer")
         self.lbl_status = lbl("", "status", hexpand=True, ellipsize=True)
         foot.append(self.lbl_status)
-        for k, h in (("↑↓", "MOVE"), ("←→", "ADJUST"), ("↵", "SELECT"), ("TAB", "PANE"), ("1-7", "JUMP"), ("ESC", "BACK")):
+        for k, h in (("↑↓", "MOVE"), ("←→", "ADJUST"), ("↵", "SELECT"), ("TAB", "PANE"), ("1-8", "JUMP"), ("ESC", "BACK")):
             foot.append(lbl(k, "key"))
             foot.append(lbl(h, "hint"))
         root.append(foot)
@@ -631,7 +633,7 @@ class Magi(Gtk.ApplicationWindow):
             p.reindex()
             self.stack.add_named(p.scroller, key)
 
-        self.idx = self.order.index(start) if start in self.order else 2
+        self.idx = self.order.index(start) if start in self.order else self.order.index("agents")
         self.goto(self.idx, pane=pane)
 
         keys = Gtk.EventControllerKey()
@@ -933,31 +935,51 @@ class Magi(Gtk.ApplicationWindow):
             if line.startswith("MemAvailable"):
                 mem = int(line.split()[1]) // 1024
         load = read("/proc/loadavg", "0").split()[0]
-        self.vote("mel", mem >= 2000, "MEM %.1fG FREE · LOAD %s" % (mem / 1024, load))
         cap, st = battery()
-        if cap is None:
-            self.vote("cas", True, "AC POWER · NO BATTERY")
-        else:
-            self.vote("cas", not (cap < 20 and st != "Charging"), "BATTERY %d%% · %s" % (cap, st.upper()))
+        power = "AC" if cap is None else "BAT %d%%" % cap
+        self.stat("sys", mem >= 2000 and not (cap is not None and cap < 20 and st != "Charging"),
+                  "MEM %.1fG FREE · LOAD %s · %s" % (mem / 1024, load, power))
+        if cap is not None:
             self.tab_tags["power"].set_label("%d%% %s" % (cap, "CHARGING" if st == "Charging" else st.upper()))
-        run_async(["nmcli", "-t", "-f", "STATE,CONNECTIVITY", "general"], self._net_vote)
+        run_async(["nmcli", "-t", "-f", "STATE,CONNECTIVITY", "general"], self._net_stat)
+        self._orc_stat()
+        if self.order[self.idx] == "agents":
+            self.load_agents()
         return True
 
-    def _net_vote(self, ok, out, _err):
+    def _orc_stat(self):
+        if not self.ag_have:
+            self.stat("orc", None, "NOT INSTALLED", "--")
+            return
+
+        def cb(ok, out, _e):
+            try:
+                d = json.loads(out)
+            except ValueError:
+                return
+            st = d.get("orchestrator", "?")
+            good = st in ("IDLE", "WORKING") if st not in ("OFF", "SETUP") else None
+            self.stat("orc", good, "%d AGENTS · LISTENER %s" % (d.get("agents", 0), d.get("listener", "?")), st)
+        run_async(["magi-agent", "status", "--json"], cb)
+
+    def _net_stat(self, ok, out, _err):
         parts = out.strip().split(":")
         state = parts[0] if parts else ""
         conn = parts[1] if len(parts) > 1 else ""
         good = ok and state.startswith("connected")
-        self.vote("bal", good, "NETWORK %s · %s" % ((state or "unknown").upper(), (conn or "?").upper()))
+        self.stat("net", good, "%s · %s" % ((state or "unknown").upper(), (conn or "?").upper()))
 
-    def vote(self, key, ok, text):
-        box, what, verdict = self.votes[key]
+    def stat(self, key, ok, text, verdict_text=None):
+        box, what, verdict = self.stats[key]
         what.set_label(text)
-        verdict.set_label("承認 APPROVED" if ok else "否決 REJECTED")
-        box.remove_css_class("ok" if not ok else "no")
-        box.add_css_class("ok" if ok else "no")
+        verdict.set_label(verdict_text or ("OK" if ok else "CHECK"))
+        for c in ("ok", "no"):
+            box.remove_css_class(c)
+        if ok is not None:
+            box.add_css_class("ok" if ok else "no")
 
     def load_all(self):
+        self.load_agents()
         self.load_network()
         self.load_bluetooth()
         self.load_sound()
@@ -1467,6 +1489,79 @@ class Magi(Gtk.ApplicationWindow):
             self.status("DRY RUN · %s · %s" % (what, " ".join(argv)), "warn")
             return
         self.launch(argv)
+
+    # ------------------------------------------------------------- AGENTS
+
+    def build_agents(self, p):
+        self.ag_have = bool(GLib.find_program_in_path("magi-agent"))
+        self.ag_cnt = p.section("ORCHESTRATOR")
+        if not self.ag_have:
+            p.add(lbl("AGENT LAYER NOT INSTALLED · see agent/setup.sh in the MAGI checkout", "note"))
+            self.ag = {}
+            return
+        self.ag = {k: p.kv(k) for k in ("STATE", "LISTENER", "WHERE")}
+        self.ag["WHERE"].set_label("tmux session magi · window 1 · SUPER+`")
+        p.add(Row(self, "ag-console", "󰆍", "OPEN CONSOLE", "drop-down orchestrator console · SUPER+`",
+                  activate=self.agent_console, glyph_class="ctl"))
+        self.ag_voice = p.add(Row(self, "ag-voice", "󰍬", "LISTENER", "local whisper · nothing uploaded · SUPER+SHIFT+M",
+                                  activate=lambda: self.agent_cmd(["magi-agent", "voice", "toggle"], "LISTENER")))
+        self.ag_list_cnt = p.section("AGENTS")
+        self.ag_list = p.group()
+        p.section("SETUP")
+        p.add(Row(self, "ag-setup", "󰒓", "PILOT SETUP", "install Claude Code · sign in · voice",
+                  activate=lambda: self.launch(["magi-pilot-setup"])))
+        p.add(Row(self, "ag-reap", "󰩺", "CLOSE IDLE AGENTS", "tmux-reap-stale · idle > 60 min · logged with resume commands",
+                  activate=lambda: self.agent_cmd(["tmux-reap-stale"], "REAP")))
+        self.ag_onoff = p.add(Row(self, "ag-onoff", "󰐥", "TURN OFF", "stop starting the orchestrator at login",
+                                  glyph_class="danger", confirm="TURN OFF",
+                                  activate=lambda: self.agent_cmd(["magi-agent", "off" if self.ag_enabled else "on"], "ORCHESTRATOR")))
+        self.ag_enabled = False
+
+    def agent_console(self):
+        self.launch(["hyprctl", "dispatch", 'hl.dsp.workspace.toggle_special("magi")'])
+
+    def agent_cmd(self, argv, what):
+        def cb(ok, out, err):
+            self.status("%s · %s" % (what, (out.strip().splitlines() or ["DONE"])[-1].upper()[:60]) if ok
+                        else "%s FAILED · %s" % (what, err.strip()[:60]), "ok" if ok else "err")
+            GLib.timeout_add(300, lambda: self.load_agents() or False)
+        run_async(argv, cb)
+
+    def load_agents(self):
+        if not self.ag_have:
+            return
+
+        def cb(ok, out, _e):
+            try:
+                d = json.loads(out)
+            except ValueError:
+                return
+            st, lis = d.get("orchestrator", "?"), d.get("listener", "?")
+            self.ag_enabled = d.get("enabled", False)
+            self.ag["STATE"].set_label(st)
+            self.set_cls(self.ag["STATE"], {"IDLE": "good", "WORKING": "good", "ASKING": "warn", "OFFLINE": "warn",
+                                            "DOWN": "bad", "SETUP": "warn", "OFF": None}.get(st))
+            self.ag["LISTENER"].set_label({"LISTEN": "LISTENING · local", "MUTED": "MUTED · nothing recorded"}.get(lis, lis))
+            self.set_cls(self.ag["LISTENER"], {"LISTEN": "good", "MUTED": "warn", "DOWN": "bad"}.get(lis))
+            self.ag_voice.set_tail(chip("ON", "on") if lis == "LISTEN" else chip("MUTED" if lis == "MUTED" else "OFF", "off"))
+            self.ag_onoff.name.set_label("TURN OFF" if self.ag_enabled else "TURN ON")
+            self.ag_onoff.confirm = "TURN OFF" if self.ag_enabled else None
+            self.ag_onoff.set_meta("stop starting the orchestrator at login" if self.ag_enabled
+                                   else "start the orchestrator at every login")
+            self.ag_cnt.set_label(st)
+            self.tab_tags["agents"].set_label("%s · %d" % (st, d.get("agents", 0)) if self.ag_enabled else st)
+            clear(self.ag_list)
+            wins = [w for w in d.get("windows", []) if w["name"] != "orchestrator"]
+            self.ag_list_cnt.set_label(str(len(wins)) if wins else "NONE")
+            for w in wins:
+                r = Row(self, "ag-w-" + w["name"], "󰚩", w["name"].upper(),
+                        "%s · %s MIN" % (w["state"].upper(), w["idle"]),
+                        glyph_class="live" if w["state"] == "busy" else ("danger" if w["state"] == "asking" else None),
+                        activate=lambda n=w["name"]: (run_async(["tmux", "select-window", "-t", "=magi:=" + n]),
+                                                      self.agent_console()))
+                self.ag_list.append(r)
+            self.pages["agents"].reindex()
+        run_async(["magi-agent", "status", "--json"], cb)
 
     # ------------------------------------------------------------- TOOLS
 

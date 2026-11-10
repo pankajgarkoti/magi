@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# magi-listen: the always-on local listener. Mic -> speech detection -> whisper (on this
+# machine) -> typed into the orchestrator pane as "[voice] ...". Audio never leaves the machine.
+#
+#   magi-listen '=magi:=orchestrator'   run (magi-agent starts it in tmux window "listen")
+#   magi-listen --once 4                 record 4 s from the mic, print the transcript (setup test)
+#   magi-listen --level                  print the mic level, 10 lines a second (setup meter)
+# Settings: ~/.config/magi/agent.conf (SOURCE = mic from `pactl list sources short`, MODEL)
+set -u
+self=$(readlink -f "${BASH_SOURCE[0]}")
+. "$(dirname "$self")/magi-voice-env" || exit 1
+CONF=${XDG_CONFIG_HOME:-$HOME/.config}/magi/agent.conf
+SOURCE= MODEL=
+[ -f "$CONF" ] && . "$CONF"
+[ -n "$SOURCE" ] && export HUD_SOURCE="$SOURCE"
+[ -n "$MODEL" ] && export HUD_MODEL="$MODEL"
+case "${1:-}" in
+  --once|--level) exec "$VOICE_PY" "$VOICE_LIB/listen.py" "$@" ;;
+  ''|-h|--help) sed -n '2,9p' "$self" | sed 's/^# \{0,1\}//'; exit 0 ;;
+esac
+export HUD_TARGET="$1"
+keep_awake=()
+command -v systemd-inhibit >/dev/null &&
+  keep_awake=(systemd-inhibit --what=idle:sleep:handle-lid-switch --who=magi-listen --why="MAGI is listening")
+printf '\e]2;MAGI · LISTEN\a\e[38;5;208m MAGI · LISTENER\e[0m  mic: %s  →  %s  (local whisper, nothing uploaded)\n' "${HUD_SOURCE:-built-in}" "$HUD_TARGET"
+while true; do
+  "${keep_awake[@]}" "$VOICE_PY" "$VOICE_LIB/listen.py"
+  echo "listener stopped; restarting in 3 s (magi-agent voice off to mute)"
+  sleep 3
+done
