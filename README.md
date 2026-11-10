@@ -38,7 +38,7 @@ devices are simulated inside the VM.
 Switching from NERV to Unit-01 on the control centre's THEME page. The few seconds the VM takes
 to apply a theme are cut. ([MP4](docs/clips/theme-switch.mp4))
 
-![Theme switch from NERV to Unit-01 in the control centre](docs/clips/theme-switch.gif)
+https://github.com/user-attachments/assets/c6d94bbf-9aad-4347-a9f7-353af367de6c
 
 The three themes on the same page: `nerv`, `unit01`, `blue`.
 
@@ -47,7 +47,7 @@ The three themes on the same page: `nerv`, `unit01`, `blue`.
 Opening the control centre, then jumping to NETWORK, BLUETOOTH and SOUND with `1`, `2`, `3`.
 ([MP4](docs/clips/control-centre.mp4))
 
-![Opening the control centre and moving between sections](docs/clips/control-centre.gif)
+https://github.com/user-attachments/assets/a23c4f63-8490-48f2-acb0-4f0d3b44d156
 
 The NETWORK page: link details, then shortcuts to the Wi-Fi picker, the connection editor and
 GNOME's network settings.
@@ -61,14 +61,14 @@ GNOME's network settings.
 Typing `naut` filters to the Files window on workspace 2; Enter jumps there.
 ([MP4](docs/clips/overview.mp4))
 
-![Filtering the overview and jumping to a window](docs/clips/overview.gif)
+https://github.com/user-attachments/assets/49de09ae-e4ea-48fd-825a-d66681113a24
 
 `eva-wifi` (SUPER + SHIFT + W): the current link and the networks in range, driven with `j`/`k`.
 ([MP4](docs/clips/wifi-picker.mp4))
 
 ![eva-wifi picker](docs/screenshots/wifi-picker.png)
 
-![Opening eva-wifi and moving through the networks](docs/clips/wifi-picker.gif)
+https://github.com/user-attachments/assets/878598bc-4d1c-4f88-95f9-749c6f9874f4
 
 `eva-bluetooth` (SUPER + SHIFT + B) during a scan: one paired speaker, one keyboard in range.
 
