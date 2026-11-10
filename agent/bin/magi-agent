@@ -1,19 +1,26 @@
 #!/usr/bin/env bash
-# magi-agent: the MAGI orchestrator. You talk (voice or typing) to one Claude Code session in
-# tmux window 1 ("orchestrator") of session "magi"; it runs the other agents.
+# magi-agent: the MAGI orchestrator. You talk (voice or typing) to one terminal agent (Claude
+# Code, opencode, Codex, or any command) in tmux window 1 ("orchestrator") of session "magi";
+# it runs the other agents.
 #
 #   magi-agent status [--waybar|--json]   state of the orchestrator, agents and listener
 #   magi-agent console                    open the orchestrator console (attach to tmux "magi")
 #   magi-agent on | off                   start at every login, or stop doing that (opt-out)
 #   magi-agent voice on|off|toggle        the local listener (off = muted, nothing is recorded)
-#   magi-agent setup                      the PILOT SETUP window (install, sign in, voice)
-#   magi-agent install-claude             run Anthropic's official Claude Code installer
+#   magi-agent setup                      the PILOT SETUP window (agent, install, sign in, voice)
+#   magi-agent use AGENT [CMD...]         orchestrator agent: claude | opencode | codex | custom CMD
+#   magi-agent use --sub AGENT [CMD...]   agent for the windows the orchestrator starts
+#   magi-agent install [AGENT]            run that agent's official installer
+#   magi-agent login [AGENT]              that agent's own sign-in
+#   magi-agent spawn WINDOW DIR [BRIEF] [--agent AGENT]   start an agent in a new tmux window
+#   magi-agent agents                     every agent in tmux: window, state, idle minutes, agent
 #   magi-agent start                      (systemd) build the tmux session; idempotent
-#   magi-agent orchestrator               (tmux window 1) run the orchestrator, or explain what is missing
+#   magi-agent orchestrator [--resume ID] (tmux window 1) run the orchestrator, or explain what is missing
 #   magi-agent firstrun                   (Hyprland autostart) open setup on the first login
 #
-# Settings: ~/.config/magi/agent.conf (ENABLED, VOICE, SOURCE, MODEL, CONSOLE_AT_LOGIN). Nothing here sends
-# anything anywhere except Claude Code itself; the listener and the voice are local.
+# Settings: ~/.config/magi/agent.conf (AGENT, SUBAGENT, AGENT_CMD, AGENT_ARGS, ENABLED, VOICE,
+# SOURCE, MODEL, CONSOLE_AT_LOGIN). Nothing here sends anything anywhere except the agent
+# itself; the listener and the voice are local. Adapters: agent/lib/magi_agents.py.
 set -uo pipefail
 export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
 # tmux refuses to run without a UTF-8 locale (the control centre calls us with LC_ALL=C)
@@ -39,16 +46,19 @@ ENABLED=0 VOICE=1 SOURCE= MODEL=base.en CONSOLE_AT_LOGIN=1
 # shellcheck disable=SC1090
 [ -f "$CONF" ] && . "$CONF"
 
-set_conf() {  # set_conf KEY VALUE
+set_conf() {  # set_conf KEY VALUE (shell-quoted, so a custom command can hold spaces)
   mkdir -p "$CONF_DIR"; touch "$CONF"
-  if grep -q "^$1=" "$CONF"; then sed -i "s|^$1=.*|$1=$2|" "$CONF"; else echo "$1=$2" >> "$CONF"; fi
+  local line; line="$1=$(printf '%q' "$2")"
+  grep -v "^$1=" "$CONF" > "$CONF.tmp" || true
+  printf '%s\n' "$line" >> "$CONF.tmp"; mv "$CONF.tmp" "$CONF"
 }
 
-have_claude() { command -v claude >/dev/null 2>&1; }
-signed_in() {
-  have_claude || return 1
-  claude auth status --json 2>/dev/null | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("loggedIn") else 1)' 2>/dev/null
-}
+# the adapter layer: one place that knows how each agent installs, signs in, launches,
+# resumes and reports its state
+AG() { python3 "$here/../lib/magi_agents.py" "$@"; }
+have_agent() { AG installed; }
+signed_in() { AG signed-in; }
+agent_label() { AG label; }
 online() {
   # NetworkManager's own connectivity check result; no extra request from here
   local c; c=$(nmcli -t networking connectivity 2>/dev/null) || return 0
@@ -68,7 +78,7 @@ ensure_listener() {
 
 cmd_start() {
   if ! tmux_has; then
-    # after a reboot: bring back the previous windows (claude --resume ...) first
+    # after a reboot: bring back the previous windows (each agent resumed) first
     if command -v tmux-restore >/dev/null && [ -s "$HOME/.local/state/tmux-snapshot/layout.json" ]; then
       tmux-restore >/dev/null 2>&1 || true
     fi
@@ -104,77 +114,60 @@ EOF
 }
 
 cmd_orchestrator() {
-  local md; md=$(orch_md)
+  local resume=
+  [ "${1:-}" = --resume ] && resume=${2:-}
   while true; do
-    if ! have_claude; then
-      banner "Claude Code is not installed." "Open PILOT SETUP: magi-agent setup  (or the AGENTS page in the control centre)" \
-        "It runs Anthropic's official installer; nothing is bundled with MAGI." "" "Waiting... (this window checks every 5 s)"
+    local name label; name=$(AG name); label=$(agent_label)
+    if ! have_agent; then
+      if [ "$name" = custom ]; then
+        banner "The orchestrator command was not found: ${AGENT_CMD:-(AGENT_CMD is empty)}" \
+          "Set it with: magi-agent use custom <command>   (or PILOT SETUP: magi-agent setup)" "" "Waiting... (this window checks every 5 s)"
+      else
+        banner "$label is not installed." "Open PILOT SETUP: magi-agent setup  (or the AGENTS page in the control centre)" \
+          "It runs the agent's official installer; nothing is bundled with MAGI." "" "Waiting... (this window checks every 5 s)"
+      fi
       sleep 5; continue
     fi
     if ! signed_in; then
       if ! online; then
-        banner "OFFLINE" "Claude needs the network. The listener and the desktop keep working." "Waiting for a connection..."
+        banner "OFFLINE" "$label needs the network to sign in. The listener and the desktop keep working." "Waiting for a connection..."
         sleep 10; continue
       fi
-      banner "Sign in to your Claude account." "A browser opens; this window continues when you are signed in." ""
-      claude auth login || { echo; echo "   Sign-in did not finish. Retrying in 10 s (Ctrl+C for a shell)."; sleep 10; }
+      banner "Sign in to your $label account." "Follow the link it prints; this window continues when you are signed in." ""
+      AG login || { echo; echo "   Sign-in did not finish. Retrying in 10 s (Ctrl+C for a shell)."; sleep 10; }
       continue
     fi
-    if ! online; then
-      banner "OFFLINE" "Claude needs the network. The listener and the desktop keep working." "Waiting for a connection..."
+    if AG needs-network && ! online; then
+      banner "OFFLINE" "$label needs the network. The listener and the desktop keep working." "Waiting for a connection..."
       sleep 10; continue
     fi
-    local args=()
-    [ -n "$md" ] && args+=(--append-system-prompt-file "$md")
-    claude "${args[@]}"
+    if [ -n "$resume" ]; then AG run-orchestrator --resume "$resume"; else AG run-orchestrator; fi
+    resume=
     echo; echo "   The orchestrator exited. Enter restarts it, Ctrl+C gives you a shell."
     read -r _ || true
   done
 }
 
-# "%3 busy" lines for every Claude session in a tmux pane; the orchestrator's pane is marked
-agent_rows() {
-  python3 - "$SESSION" <<'PY'
-import json, os, pathlib, re, subprocess, sys, time
-WAIT = re.compile(r"Enter to select|Do you want|Allow this|Esc to cancel|\[y/N\]|\(y/n\)", re.I)
-def sh(*a): return subprocess.run(a, capture_output=True, text=True).stdout
-panes = {}
-for line in sh("tmux", "list-panes", "-a", "-F", "#{pane_id}\t#S\t#W\t#{pane_pid}").splitlines():
-    p = line.split("\t")
-    if len(p) == 4: panes[p[0]] = (p[1], p[2])
-now = time.time() * 1000
-for f in (pathlib.Path.home() / ".claude/sessions").glob("*.json"):
-    try: d = json.loads(f.read_text())
-    except Exception: continue
-    pid, tm = d.get("pid"), d.get("tmux") or ""
-    if not pid or not os.path.exists(f"/proc/{pid}") or "%" not in tm: continue
-    pane = "%" + tm.split("%", 1)[1]
-    if pane not in panes: continue
-    sess, win = panes[pane]
-    st = d.get("status") or "idle"
-    if WAIT.search(sh("tmux", "capture-pane", "-p", "-t", pane)[-3000:]): st = "asking"
-    mins = int((now - d.get("statusUpdatedAt", now)) / 60000)
-    print(f"{win}\t{st}\t{mins}\t{sess}")
-PY
-}
+# one line per agent in a tmux pane: window, state, idle minutes, session, agent, pane
+agent_rows() { AG rows 2>/dev/null; }
 
 cmd_status() {
   local mode=${1:-text} orch=OFF lis=OFF n=0 asking=0 rows="" tip="" cls=off
   if [ "$ENABLED" != 1 ]; then
     if [ -e "$STATE/setup-done" ]; then orch=OFF; else orch=SETUP; fi
-  elif ! have_claude; then orch=SETUP
+  elif ! have_agent; then orch=SETUP
   elif ! tmux_has || ! win_exists orchestrator; then orch=DOWN
   else
     rows=$(agent_rows)
-    local o; o=$(awk -F'\t' '$1=="orchestrator"{print $2; exit}' <<< "$rows")
+    local o; o=$(awk -F'\t' -v s="$SESSION" '$1=="orchestrator" && $4==s {print $2; exit}' <<< "$rows")
     case "$o" in
       busy) orch=WORKING ;; asking) orch=ASKING ;; idle|waiting) orch=IDLE ;;
       *) if online; then orch=SIGN-IN; signed_in && orch=STARTING; else orch=OFFLINE; fi ;;
     esac
     [ -n "$o" ] && ! online && orch=OFFLINE
-    n=$(awk -F'\t' '$1!="orchestrator"' <<< "$rows" | grep -c . || true)
+    n=$(awk -F'\t' -v s="$SESSION" '!($1=="orchestrator" && $4==s)' <<< "$rows" | grep -c . || true)
     asking=$(awk -F'\t' '$2=="asking"' <<< "$rows" | grep -c . || true)
-    tip=$(awk -F'\t' '{printf "%-14s %-8s %sm\\n", $1, toupper($2), $3}' <<< "$rows")
+    tip=$(awk -F'\t' '{printf "%-14s %-8s %-9s %sm\\n", $1, toupper($2), $5, $3}' <<< "$rows")
   fi
   if [ "$ENABLED" = 1 ]; then
     if muted; then lis=MUTED; elif listener_up; then lis=LISTEN; else lis=DOWN; fi
@@ -186,14 +179,14 @@ cmd_status() {
       local text="◉ $orch"
       [ "$ENABLED" = 1 ] && text="$text · $n AGENT$([ "$n" = 1 ] || echo S) · $([ "$lis" = LISTEN ] && echo '●' || echo '○') $lis"
       [ "$asking" -gt 0 ] && text="$text · $asking ASKING"
-      local t="ORCHESTRATOR $orch · LISTENER $lis\\n${tip}Click: console · Right-click: mute · Middle: control centre"
+      local t="ORCHESTRATOR $orch ($(agent_label)) · LISTENER $lis\\n${tip}Click: console · Right-click: mute · Middle: control centre"
       printf '{"text": "%s", "class": "%s", "tooltip": "%s"}\n' "$text" "$cls" "$t" ;;
     --json) ROWS=${rows:-} python3 -c 'import json, os, sys
 o, n, a, l, e = sys.argv[1:6]
-w = [dict(zip(("name", "state", "idle", "session"), r.split("\t"))) for r in os.environ["ROWS"].splitlines() if r.count("\t") == 3]
-print(json.dumps({"orchestrator": o, "agents": int(n), "asking": int(a), "listener": l, "enabled": e == "1", "windows": w}))' \
-              "$orch" "$n" "$asking" "$lis" "$ENABLED" ;;
-    *) echo "orchestrator: $orch"; echo "listener:     $lis"; echo "agents:       $n ($asking asking)"
+w = [dict(zip(("name", "state", "idle", "session", "agent", "pane"), r.split("\t"))) for r in os.environ["ROWS"].splitlines() if r.count("\t") == 5]
+print(json.dumps({"orchestrator": o, "agent": sys.argv[6], "agents": int(n), "asking": int(a), "listener": l, "enabled": e == "1", "windows": w}))' \
+              "$orch" "$n" "$asking" "$lis" "$ENABLED" "$(AG name)" ;;
+    *) echo "orchestrator: $orch ($(agent_label))"; echo "listener:     $lis"; echo "agents:       $n ($asking asking)"
        [ -n "$tip" ] && printf '%b' "$tip" | sed 's/^/  /' ;;
   esac
 }
@@ -229,13 +222,18 @@ cmd_voice() {
   muted && echo "listener muted" || echo "listener on"
 }
 
-cmd_install_claude() {
-  # Anthropic's official native installer (per-user, ~/.local/bin/claude). Claude Code is not
-  # part of MAGI; its licence: https://code.claude.com/docs/en/legal-and-compliance
-  local url=${MAGI_CLAUDE_INSTALL_URL:-https://claude.ai/install.sh}
-  have_claude && { echo "Claude Code already installed: $(command -v claude)"; return 0; }
-  echo "Running Anthropic's installer: curl -fsSL $url | bash"
-  curl -fsSL "$url" | bash
+cmd_use() {
+  local key=AGENT what=
+  [ "${1:-}" = --sub ] && { key=SUBAGENT; shift; }
+  case "${1:-}" in
+    claude|opencode|codex) set_conf "$key" "$1"; what=$1 ;;
+    custom) shift; [ $# -gt 0 ] || { echo "magi-agent use custom <command...>" >&2; return 2; }
+            set_conf "$key" custom; set_conf AGENT_CMD "$*"; what="custom ($*)" ;;
+    *) echo "magi-agent use [--sub] claude|opencode|codex|custom <command>" >&2; return 2 ;;
+  esac
+  echo "$([ "$key" = AGENT ] && echo orchestrator || echo sub-agents): $what"
+  [ "$key" = AGENT ] && tmux_has && echo "Restart window 1 to switch: tmux kill-window -t =magi:=orchestrator; magi-agent start"
+  return 0
 }
 
 cmd_firstrun() {
@@ -269,10 +267,15 @@ case "${1:-status}" in
   off) cmd_off ;;
   voice) cmd_voice "${2:-toggle}" ;;
   setup) exec magi-pilot-setup ;;
-  install-claude) cmd_install_claude ;;
+  use) shift; cmd_use "$@" ;;
+  install) AG install "${2:-$(AG name)}" ;;
+  install-claude) AG install claude ;;
+  login) AG login ${2:+"$2"} ;;
+  spawn) shift; AG spawn "$@" ;;
+  agents) agent_rows | awk -F'\t' 'BEGIN{printf "%-16s %-8s %-9s %-6s %s\n", "WINDOW", "STATE", "AGENT", "IDLE", "PANE"} {printf "%-16s %-8s %-9s %-6s %s\n", $4":"$1, toupper($2), $5, $3"m", $6}' ;;
   start) cmd_start ;;
-  orchestrator) cmd_orchestrator ;;
+  orchestrator) shift; cmd_orchestrator "$@" ;;
   firstrun) cmd_firstrun ;;
-  -h|--help|help) sed -n '2,17p' "$self" | sed 's/^# \{0,1\}//' ;;
+  -h|--help|help) sed -n '2,25p' "$self" | sed 's/^# \{0,1\}//' ;;
   *) echo "magi-agent: unknown command $1 (try --help)" >&2; exit 2 ;;
 esac

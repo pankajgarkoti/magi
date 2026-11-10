@@ -9,8 +9,8 @@ three colour themes.
 
 ## The orchestrator
 
-- **One agent in front.** A Claude Code session runs in tmux window 1 (session `magi`) and
-  starts at login. SUPER+` drops its console over the desktop; the console also opens by
+- **One agent in front.** An orchestrator agent (Claude Code, opencode, Codex, or any terminal
+  agent) runs in tmux window 1 (session `magi`) and starts at login. SUPER+` drops its console over the desktop; the console also opens by
   itself at login. Other agents get their own tmux windows. The orchestrator starts them,
   checks their work, drives Hyprland through `hyprctl`, and brings you decisions.
 - **Local voice.** A listener transcribes the microphone with faster-whisper (`base.en`) and
@@ -21,11 +21,12 @@ three colour themes.
   (`IDLE`, `WORKING`, `ASKING` when a prompt waits, `OFFLINE`), the number of agents, and the
   listener. The control centre's AGENTS page lists every agent and has the switches.
 - **Housekeeping.** Agents idle for an hour are closed, with the resume command logged.
-  After a reboot the tmux layout comes back with each session resumed.
-- **Opt-in, and not bundled.** Claude Code is Anthropic's software and is not in the image.
-  On first login, PILOT SETUP runs Anthropic's installer, you sign in with your own account,
-  and you pick a microphone. "Not now" leaves a plain desktop; `magi-agent off` turns it off
-  later. Without network, everything except Claude keeps working.
+  After a reboot the tmux layout comes back with each session resumed. An agent with no
+  resume command starts fresh.
+- **Opt-in, and not bundled.** No agent is in the image. On first login, PILOT SETUP asks
+  which agent to use, runs that agent's official installer, you sign in with your own
+  account, and you pick a microphone. "Not now" leaves a plain desktop; `magi-agent off`
+  turns it off later. Without network, everything except the agent keeps working.
 
 | | |
 |---|---|
@@ -33,9 +34,40 @@ three colour themes.
 
 ![Bar module: orchestrator state, agents, listener](docs/screenshots/agent-bar.png)
 
-The orchestrator text in these screenshots comes from a test stand-in for the `claude`
-command; the VM was not signed in to a Claude account. They were captured at 2× in the MAGI
+The orchestrator text in these screenshots comes from a test stand-in for the agent command;
+the VM was not signed in to any agent account. They were captured at 2× in the MAGI
 distro test VM, installed from the ISO.
+
+## Choosing the agent
+
+tmux is the orchestration layer, so the orchestrator and its agents can be any terminal agent.
+`send-keys`, `capture-pane` and the window layout work the same for all of them. What differs
+per agent (installer, sign-in, launch, resume, how its state is read) is in
+[`agent/lib/magi_agents.py`](agent/lib/magi_agents.py).
+
+| Agent | Installed by | Resume after reboot | State read from |
+|---|---|---|---|
+| Claude Code | `curl -fsSL https://claude.ai/install.sh \| bash` | `claude --resume <id>` | `~/.claude/sessions/<pid>.json` |
+| opencode | `curl -fsSL https://opencode.ai/install \| bash` | `opencode --session <id>` | opencode's local server API |
+| Codex | `curl -fsSL https://chatgpt.com/codex/install.sh \| sh` | `codex resume <id>` | Codex's session rollout file |
+| custom | your own command | starts fresh (or `AGENT_RESUME`) | the tmux pane |
+
+Approval and permission prompts are read from the pane for every agent. Change the agent in
+PILOT SETUP, or:
+
+```bash
+magi-agent use opencode                  # the orchestrator
+magi-agent use --sub claude              # the agents it starts (default: same as the orchestrator)
+magi-agent use custom aider --model sonnet
+```
+
+Settings live in `~/.config/magi/agent.conf` (`AGENT`, `SUBAGENT`, `AGENT_CMD`, `AGENT_ARGS`).
+Claude Code gets MAGI's instructions with `--append-system-prompt-file`. The others start in
+`~/.local/state/magi/orchestrator`, whose `AGENTS.md` is MAGI's
+[`ORCHESTRATOR.md`](agent/ORCHESTRATOR.md). `AGENT_ARGS` passes extra flags to the
+orchestrator, for example Codex's `--sandbox`: the orchestrator runs tmux and `hyprctl`, which
+a tight sandbox may block. The orchestrator starts other agents with
+`magi-agent spawn <window> <dir> <brief>`.
 
 ## The desktop
 
@@ -271,7 +303,8 @@ Then pick GNOME again on the login screen.
 ```
 install.sh  uninstall.sh
 agent/             the orchestrator layer: magi-agent, PILOT SETUP, listener, hud-say, tmux
-                   snapshot/restore/reaper, user units, ORCHESTRATOR.md, voice runtime build
+                   snapshot/restore/reaper, user units, ORCHESTRATOR.md, voice runtime build,
+                   agent adapters (lib/magi_agents.py)
 distro/            Containerfile (bootc image), build-iso.sh, installer kickstart + branding
 packages/          stow packages, linked into ~ file by file
   hypr/            Hyprland, waybar, mako, wofi, themes, the magi/eva-* tools (~/.local/bin)
@@ -296,5 +329,7 @@ tests/             container-test.sh (podman, Fedora 44) and the VM test notes
 - Voice: [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (MIT) with the
   `base.en` model, and [Piper](https://github.com/OHF-Voice/piper1-gpl) (GPL-3.0-or-later) with
   the `en_US-ljspeech-medium` voice (LJ Speech dataset, public domain).
-- The orchestrator uses [Claude Code](https://code.claude.com), which MAGI does not include or
-  redistribute; it is installed from Anthropic and used under Anthropic's terms.
+- The orchestrator can use [Claude Code](https://code.claude.com),
+  [opencode](https://opencode.ai) or [Codex](https://github.com/openai/codex). MAGI does not
+  include or redistribute any of them; each is installed from its publisher at first login and
+  used under its publisher's terms.

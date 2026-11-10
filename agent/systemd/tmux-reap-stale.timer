@@ -1,5 +1,5 @@
 [Unit]
-Description=Every 10 minutes, close Claude Code sessions idle for an hour (20 min when memory is short)
+Description=Every 10 minutes, close agent sessions idle for an hour (20 min when memory is short)
 
 [Timer]
 OnBootSec=10min

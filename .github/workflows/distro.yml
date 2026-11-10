@@ -54,7 +54,7 @@ jobs:
             test -f /usr/lib/magi/voice/models/whisper-base.en/model.bin
             test -f /usr/lib/magi/voice/voices/en_US-ljspeech-medium.onnx
             if ls /usr/share/magi/wallpapers/*.jpg /usr/share/magi/wallpapers/*.png 2>/dev/null; then echo wallpapers shipped; exit 1; fi
-            if command -v claude; then echo claude shipped; exit 1; fi'
+            for a in claude opencode codex; do if command -v "$a"; then echo "$a shipped"; exit 1; fi; done'
       - name: Publish (only with MAGI_PUBLISH=true, only from main)
         if: github.ref == 'refs/heads/main' && github.event_name == 'push' && vars.MAGI_PUBLISH == 'true'
         run: |

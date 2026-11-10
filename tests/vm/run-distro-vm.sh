@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Boot the MAGI distro test VM headless (UEFI). Same display setup as run-vm.sh: virtio-vga-gl
 # rendered off-screen, localhost-only VNC for screendumps, nothing on the host desktop.
-#   VM_DIR=~/vm/magi-distro [XRES=2560 YRES=1600] tests/vm/run-distro-vm.sh [--iso FILE]   (--iso: boot the installer)
+#   VM_DIR=~/vm/magi-distro [XRES=2560 YRES=1600 MEM=6144] tests/vm/run-distro-vm.sh [--iso FILE]   (--iso: boot the installer)
 set -euo pipefail
 VM_DIR=${VM_DIR:-$HOME/vm/magi-distro}
 cd "$VM_DIR"
@@ -9,7 +9,7 @@ cd "$VM_DIR"
 [ -f OVMF_VARS.fd ] || cp /usr/share/edk2/ovmf/OVMF_VARS.fd OVMF_VARS.fd
 cd_args=()
 if [ "${1:-}" = --iso ]; then cd_args=(-drive "file=$2,media=cdrom,readonly=on" -boot once=d); fi
-exec qemu-system-x86_64 -enable-kvm -machine q35 -cpu host -smp 4 -m 6144 \
+exec qemu-system-x86_64 -enable-kvm -machine q35 -cpu host -smp 4 -m ${MEM:-6144} \
   -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/ovmf/OVMF_CODE.fd \
   -drive if=pflash,format=raw,file=OVMF_VARS.fd \
   -drive file=disk.qcow2,if=virtio "${cd_args[@]}" \

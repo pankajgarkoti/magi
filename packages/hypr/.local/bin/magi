@@ -1499,7 +1499,7 @@ class Magi(Gtk.ApplicationWindow):
             p.add(lbl("AGENT LAYER NOT INSTALLED · see agent/setup.sh in the MAGI checkout", "note"))
             self.ag = {}
             return
-        self.ag = {k: p.kv(k) for k in ("STATE", "LISTENER", "WHERE")}
+        self.ag = {k: p.kv(k) for k in ("STATE", "AGENT", "LISTENER", "WHERE")}
         self.ag["WHERE"].set_label("tmux session magi · window 1 · SUPER+`")
         p.add(Row(self, "ag-console", "󰆍", "OPEN CONSOLE", "drop-down orchestrator console · SUPER+`",
                   activate=self.agent_console, glyph_class="ctl"))
@@ -1508,7 +1508,7 @@ class Magi(Gtk.ApplicationWindow):
         self.ag_list_cnt = p.section("AGENTS")
         self.ag_list = p.group()
         p.section("SETUP")
-        p.add(Row(self, "ag-setup", "󰒓", "PILOT SETUP", "install Claude Code · sign in · voice",
+        p.add(Row(self, "ag-setup", "󰒓", "PILOT SETUP", "pick the agent · install · sign in · voice",
                   activate=lambda: self.launch(["magi-pilot-setup"])))
         p.add(Row(self, "ag-reap", "󰩺", "CLOSE IDLE AGENTS", "tmux-reap-stale · idle > 60 min · logged with resume commands",
                   activate=lambda: self.agent_cmd(["tmux-reap-stale"], "REAP")))
@@ -1539,6 +1539,8 @@ class Magi(Gtk.ApplicationWindow):
             st, lis = d.get("orchestrator", "?"), d.get("listener", "?")
             self.ag_enabled = d.get("enabled", False)
             self.ag["STATE"].set_label(st)
+            self.ag["AGENT"].set_label({"claude": "CLAUDE CODE", "opencode": "OPENCODE", "codex": "CODEX"}.get(
+                d.get("agent"), (d.get("agent") or "?").upper()) + " · magi-agent use <agent> to change")
             self.set_cls(self.ag["STATE"], {"IDLE": "good", "WORKING": "good", "ASKING": "warn", "OFFLINE": "warn",
                                             "DOWN": "bad", "SETUP": "warn", "OFF": None}.get(st))
             self.ag["LISTENER"].set_label({"LISTEN": "LISTENING · local", "MUTED": "MUTED · nothing recorded"}.get(lis, lis))
@@ -1555,7 +1557,7 @@ class Magi(Gtk.ApplicationWindow):
             self.ag_list_cnt.set_label(str(len(wins)) if wins else "NONE")
             for w in wins:
                 r = Row(self, "ag-w-" + w["name"], "󰚩", w["name"].upper(),
-                        "%s · %s MIN" % (w["state"].upper(), w["idle"]),
+                        "%s · %s · %s MIN" % (w["state"].upper(), w.get("agent", "?").upper(), w["idle"]),
                         glyph_class="live" if w["state"] == "busy" else ("danger" if w["state"] == "asking" else None),
                         activate=lambda n=w["name"]: (run_async(["tmux", "select-window", "-t", "=magi:=" + n]),
                                                       self.agent_console()))

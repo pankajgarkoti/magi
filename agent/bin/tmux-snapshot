@@ -3,7 +3,9 @@
 
 For every window: session (group name for grouped sessions), index, name, and each pane's
 cwd plus how to restart it:
-  - Claude Code panes  -> claude --resume <sessionId> with the same permission flags
+  - agent panes (Claude Code, opencode, Codex, a custom agent; see agent/lib/magi_agents.py)
+      -> the agent's resume command with the same flags, or a fresh start when it can't resume
+  - the orchestrator (window "orchestrator" of session magi) -> magi-agent orchestrator --resume
   - panes with a start command (the listener, servers, ...) -> that command
   - nvim panes         -> nvim
   - anything else      -> a shell in the same folder
@@ -14,53 +16,16 @@ wipe the layout before it is restored. Run by tmux-snapshot.timer every minute.
 """
 import json, os, pathlib, shlex, shutil, subprocess, sys, time
 
+sys.path.insert(0, str(pathlib.Path(os.path.realpath(__file__)).parent.parent / "lib"))
+import magi_agents  # noqa: E402
+
 HOME = pathlib.Path.home()
 STATE = HOME / ".local/state/tmux-snapshot"
-KEEP_FLAGS_WITH_VALUE = {"--permission-mode", "--model", "--effort", "--name", "--add-dir",
-                         "--append-system-prompt-file"}
-KEEP_FLAGS = {"--dangerously-skip-permissions", "--chrome", "--verbose"}
 
 
 def tmux(*args):
     r = subprocess.run(["tmux", *args], capture_output=True, text=True)
     return r.stdout if r.returncode == 0 else None
-
-
-def claude_sessions():
-    """pane id -> (sessionId, cwd, pid) from Claude's own status files."""
-    out = {}
-    for f in (HOME / ".claude/sessions").glob("*.json"):
-        try:
-            d = json.loads(f.read_text())
-        except Exception:
-            continue
-        pid, tm = d.get("pid"), d.get("tmux") or ""
-        if not pid or "%" not in tm or not os.path.exists(f"/proc/{pid}"):
-            continue
-        out[tm.split(".")[-1]] = (d.get("sessionId"), d.get("cwd"), pid)
-    return out
-
-
-def claude_flags(pid):
-    try:
-        argv = pathlib.Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
-    except Exception:
-        return []
-    argv = [a.decode(errors="replace") for a in argv if a]
-    flags, i = [], 1
-    while i < len(argv):
-        a = argv[i]
-        key = a.split("=", 1)[0]
-        if key in KEEP_FLAGS:
-            flags.append(a)
-        elif key in KEEP_FLAGS_WITH_VALUE:
-            if "=" in a:
-                flags.append(a)
-            elif i + 1 < len(argv):
-                flags += [a, argv[i + 1]]
-                i += 1
-        i += 1
-    return flags
 
 
 def main():
@@ -74,7 +39,11 @@ def main():
     raw = tmux("list-panes", "-a", "-F", fmt)
     if not raw:
         return 0  # no server: keep the last snapshot
-    sessions = claude_sessions()
+    try:
+        found = {r["pane"]: r for r in magi_agents.agents()}
+    except Exception as e:  # never lose the layout over an adapter error
+        print(f"tmux-snapshot: agent detection failed: {e}", file=sys.stderr)
+        found = {}
     windows, seen = {}, set()
     for line in raw.splitlines():
         parts = line.split("\t")
@@ -86,9 +55,12 @@ def main():
             continue
         seen.add((wid, pid_))
         pane = {"cwd": cwd}
-        if pid_ in sessions and sessions[pid_][0]:
-            sid, scwd, cpid = sessions[pid_]
-            pane.update(kind="claude", session_id=sid, cwd=scwd or cwd, flags=claude_flags(cpid))
+        ag = found.get(pid_)
+        if ag and session == magi_agents.SESSION and wname == "orchestrator":
+            pane.update(kind="orchestrator", agent=ag["agent"], session_id=ag["session_id"], cwd=ag["cwd"] or cwd)
+        elif ag:
+            pane.update(kind="agent", agent=ag["agent"], session_id=ag["session_id"], cwd=ag["cwd"] or cwd,
+                        flags=ag["flags"])
         elif start:
             if start.startswith('"') and start.endswith('"'):  # tmux shows it quoted
                 try:

@@ -1,0 +1,234 @@
+#!/usr/bin/env python3
+"""TEST ONLY: a stand-in for a terminal agent, so the MAGI agent layer can be tested without
+an account. Never part of the image. It mimics the interface MAGI relies on, per agent:
+
+  installed as     claude            opencode                   codex             anything else
+  sign-in          auth status/login (none needed)              login status/login  (none)
+  resume           --resume ID       --session ID               resume ID         (starts fresh)
+  own state        ~/.claude/        server API (service.json,  thread row in     -
+                   sessions/<pid>    /api/session, permissions) ~/.codex/state_5 +
+                                                                rollout events
+  working screen   esc to interrupt  esc interrupt              esc to interrupt  working...
+  asking screen    Do you want to    Permission required        Would you like to [y/N]
+
+Typed lines: "work N" works for N seconds, "ask" shows a permission prompt until "y" or "n",
+anything else is answered after 1 s. Every start and line is logged to ~/.magi-stub/<kind>.log.
+  agent-stub serve      (opencode only) the stub server behind service.json
+"""
+import json, os, secrets, sqlite3, subprocess, sys, threading, time, uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+HOME = os.path.expanduser("~")
+KIND = os.environ.get("STUB_KIND") or os.path.basename(sys.argv[0])
+KIND = KIND if KIND in ("claude", "opencode", "codex") else "custom"
+LOGDIR = os.path.join(HOME, ".magi-stub")
+os.makedirs(LOGDIR, exist_ok=True)
+LOG = os.path.join(LOGDIR, f"{KIND}.log")
+SIGNED = os.path.join(LOGDIR, f"{KIND}-signed-in")
+XSTATE = os.environ.get("XDG_STATE_HOME", os.path.join(HOME, ".local/state"))
+OC_DIR = os.path.join(XSTATE, "opencode-stub")
+a = sys.argv[1:]
+
+
+def log(msg):
+    with open(LOG, "a") as f:
+        f.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
+
+
+# the process name the real binary has (MAGI matches on it)
+try:
+    import ctypes
+    ctypes.CDLL(None).prctl(15, KIND.encode() if KIND != "custom" else os.path.basename(sys.argv[0]).encode()[:15], 0, 0, 0)
+except Exception:
+    pass
+
+if a[:1] in (["--version"], ["-v"]):
+    print(f"0.0.0 ({KIND}-stub, test only)"); sys.exit(0)
+
+# ------------------------------------------------------------------ sign-in
+if KIND == "claude" and a[:2] == ["auth", "status"]:
+    print(json.dumps({"loggedIn": os.path.exists(SIGNED), "authMethod": "stub"})); sys.exit(0)
+if KIND == "claude" and a[:2] == ["auth", "login"] or KIND == "codex" and a[:1] == ["login"] and a[1:2] != ["status"]:
+    print(f"{KIND}-stub: pretend browser sign-in... (3 s)", flush=True)
+    time.sleep(3); open(SIGNED, "w").close(); print("Signed in (stub)."); log("login"); sys.exit(0)
+if KIND == "codex" and a[:2] == ["login", "status"]:
+    if os.path.exists(SIGNED):
+        print("Logged in using ChatGPT (stub)"); sys.exit(0)
+    print("Not logged in"); sys.exit(1)
+if KIND == "opencode" and a[:2] == ["auth", "list"]:
+    print("No authenticated integrations"); sys.exit(0)
+if KIND == "opencode" and a[:2] == ["auth", "login"]:
+    log("login"); print("opencode-stub: nothing to do"); sys.exit(0)
+
+
+# ------------------------------------------------------------------ opencode: stub server
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *_):
+        pass
+
+    def do_GET(self):
+        if self.headers.get("Authorization") != "Basic " + __import__("base64").b64encode(f"opencode:{PW}".encode()).decode():
+            return self.reply(401, {"_tag": "UnauthorizedError"})
+        p = self.path.split("?")[0]
+        if p == "/api/info":
+            return self.reply(200, {"version": "0.0.0-stub", "pid": os.getpid()})
+        sessions = {}
+        for f in os.listdir(OC_DIR):
+            if f.endswith(".json"):
+                try:
+                    d = json.load(open(os.path.join(OC_DIR, f)))
+                    sessions[d["id"]] = d
+                except (OSError, ValueError):
+                    pass
+        if p == "/api/session/active":
+            return self.reply(200, {"data": {k: {"type": "running"} for k, d in sessions.items() if d.get("running")}})
+        if p.startswith("/api/session/") and p.endswith("/permission"):
+            sid = p.split("/")[3]
+            d = sessions.get(sid, {})
+            data = [{"id": "per_stub" + sid[-6:], "sessionID": sid, "action": "shell", "resources": ["rm -rf build"]}] if d.get("asking") else []
+            return self.reply(200, {"data": data})
+        if p.startswith("/api/session/"):
+            sid = p.rsplit("/", 1)[1]
+            try:
+                d = json.load(open(os.path.join(OC_DIR, sid + ".json")))
+            except OSError:
+                return self.reply(404, {"_tag": "NotFound"})
+            return self.reply(200, {"data": {"id": sid, "time": d["time"], "location": {"directory": d["cwd"]}}})
+        self.reply(404, {})
+
+    def reply(self, code, body):
+        b = json.dumps(body).encode()
+        self.send_response(code); self.send_header("Content-Type", "application/json"); self.end_headers(); self.wfile.write(b)
+
+
+SJ = os.path.join(XSTATE, "opencode/service.json")
+if KIND == "opencode" and a[:1] == ["serve"]:
+    os.makedirs(OC_DIR, exist_ok=True); os.makedirs(os.path.dirname(SJ), exist_ok=True)
+    PW = secrets.token_urlsafe(16)
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    json.dump({"id": str(uuid.uuid4()), "version": "0.0.0-stub", "url": f"http://127.0.0.1:{srv.server_port}",
+               "pid": os.getpid(), "password": PW}, open(SJ, "w"))
+    srv.serve_forever()
+
+
+def oc_service():
+    try:
+        s = json.load(open(SJ))
+        os.kill(s["pid"], 0)
+        return
+    except Exception:
+        pass
+    subprocess.Popen([sys.executable, os.path.realpath(__file__), "serve"], env=dict(os.environ, STUB_KIND="opencode"),
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    for _ in range(50):
+        if os.path.exists(SJ):
+            return
+        time.sleep(0.1)
+
+
+# ------------------------------------------------------------------ the interactive agent
+resumed = False
+if KIND == "claude":
+    sid = a[a.index("--resume") + 1] if "--resume" in a else str(uuid.uuid4()); resumed = "--resume" in a
+elif KIND == "opencode":
+    sid = a[a.index("--session") + 1] if "--session" in a else "ses_stub" + secrets.token_hex(8)
+    resumed = os.path.exists(os.path.join(OC_DIR, sid + ".json"))
+elif KIND == "codex":
+    resumed = a[:1] == ["resume"]
+    sid = a[1] if resumed and len(a) > 1 and not a[1].startswith("-") else str(uuid.uuid4())
+else:
+    sid = None
+agents_md = os.path.join(os.getcwd(), "AGENTS.md")
+log(f"start argv={a!r} cwd={os.getcwd()} agents_md={open(agents_md).readline().strip() if os.path.exists(agents_md) else 'none'}")
+
+pane = os.environ.get("TMUX_PANE", "")
+SF = os.path.join(HOME, ".claude/sessions", f"{os.getpid()}.json")
+if KIND == "opencode":
+    oc_service(); os.makedirs(OC_DIR, exist_ok=True)
+if KIND == "codex":
+    ch = os.environ.get("CODEX_HOME", os.path.join(HOME, ".codex")); os.makedirs(ch, exist_ok=True)
+    con = sqlite3.connect(os.path.join(ch, "state_5.sqlite"))
+    con.execute("create table if not exists threads (id text primary key, rollout_path text, created_at integer, "
+                "updated_at integer, source text, cwd text, archived integer not null default 0)")
+    ROLLOUT = os.path.join(ch, "sessions", time.strftime("%Y/%m/%d"), f"rollout-stub-{sid}.jsonl")
+    if not resumed:
+        os.makedirs(os.path.dirname(ROLLOUT), exist_ok=True)
+        con.execute("insert or replace into threads values (?,?,?,?,?,?,0)",
+                    (sid, ROLLOUT, int(time.time()), int(time.time()), "vscode", os.path.realpath(os.getcwd())))
+    else:
+        row = con.execute("select rollout_path from threads where id = ?", (sid,)).fetchone()
+        ROLLOUT = row[0] if row else ROLLOUT
+    con.commit(); con.close()
+oc_time = {"created": int(time.time() * 1000)}
+
+
+def status(st):
+    now = int(time.time() * 1000)
+    if KIND == "claude":
+        tm = ""
+        if pane:
+            out = subprocess.run(["tmux", "display-message", "-p", "-t", pane, "#S:#{window_id}"], capture_output=True, text=True).stdout.strip()
+            tm = f"{out}.{pane}"
+        os.makedirs(os.path.dirname(SF), exist_ok=True)
+        json.dump({"pid": os.getpid(), "sessionId": sid, "cwd": os.getcwd(), "startedAt": now, "kind": "interactive",
+                   "tmux": tm, "status": "busy" if st == "busy" else "idle", "updatedAt": now, "statusUpdatedAt": now}, open(SF, "w"))
+    elif KIND == "codex":
+        # Codex's rollout file: task_started when a turn begins, task_complete when it ends
+        ev = "task_complete" if st == "idle" else "task_started"
+        if ev != getattr(status, "last", None):
+            status.last = ev
+            with open(ROLLOUT, "a") as f:
+                f.write(json.dumps({"timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()), "type": "event_msg",
+                                    "payload": {"type": ev, "turn_id": sid}}) + "\n")
+    elif KIND == "opencode":
+        if st in ("busy", "idle"):
+            oc_time[st] = now
+        json.dump({"id": sid, "cwd": os.getcwd(), "time": oc_time, "asking": st == "asking", "running": st != "idle"},
+                  open(os.path.join(OC_DIR, sid + ".json"), "w"))
+
+
+SCREEN = {
+    "claude":   {"prompt": "\n❯ ", "busy": "✻ Working… (esc to interrupt)",
+                 "ask": "Bash command\n  rm -rf build\nDo you want to proceed?\n❯ 1. Yes\n  2. No\nEsc to cancel"},
+    "opencode": {"prompt": "\n┃  Ask anything…\n┃  Build · stub model\n~/proj  ctrl+p commands\n> ", "busy": "⬝⬝■ working   esc interrupt",
+                 "ask": "△ Permission required\n  $ rm -rf build\n  Allow once   Allow always   Reject"},
+    "codex":    {"prompt": "\n› ", "busy": "• Working (3s • esc to interrupt)",
+                 "ask": "Would you like to run the following command?\n  $ rm -rf build\n› 1. Yes, proceed (y)\n  2. No (esc)"},
+    "custom":   {"prompt": "\n> ", "busy": "working...", "ask": "Run rm -rf build? [y/N]"},
+}[KIND]
+
+status("idle")
+head = "\x1b[1m %s (stub)\x1b[0m  session %s%s" % (KIND, sid, "  [resumed]" if resumed else "")
+last = ""
+try:
+    while True:
+        # redraw like a TUI: the screen shows only the current state
+        print("\x1b[2J\x1b[H" + head + "\n" + last + SCREEN["prompt"], end="", flush=True)
+        line = sys.stdin.readline()
+        if not line:
+            break
+        line = line.strip()
+        if not line:
+            continue
+        log(f"received: {line}")
+        if line.startswith("work"):
+            n = float((line.split() + ["3"])[1])
+            status("busy"); print("\x1b[2J\x1b[H" + head + "\n" + SCREEN["busy"], flush=True)
+            time.sleep(n)
+            last = "● done"
+        elif line == "ask":
+            status("asking"); print("\x1b[2J\x1b[H" + head + "\n" + SCREEN["ask"], flush=True)
+            ans = sys.stdin.readline().strip()
+            log(f"answered: {ans}")
+            last = "● allowed" if ans.lower().startswith("y") else "● rejected"
+        else:
+            status("busy"); time.sleep(1)
+            last = f"● ({KIND} stub) received: {line}"
+            if line.startswith("[voice]"):
+                subprocess.Popen(["hud-say", "Heard you."], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        status("idle")
+finally:
+    try:
+        os.unlink(SF) if KIND == "claude" else None
+    except OSError:
+        pass

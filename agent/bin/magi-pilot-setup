@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """magi-pilot-setup: first-login setup for the MAGI orchestrator.
 
-Four steps, each skippable: what the orchestrator is -> install Claude Code (Anthropic's
-official installer, nothing bundled) -> sign in to the user's own Claude account -> local
-voice (mic, level meter, transcript test, speaking test). Styled from the active MAGI theme
+Four steps, each skippable: what the orchestrator is -> pick and install the agent (Claude
+Code, opencode, Codex, or any terminal agent; each from its official installer, nothing
+bundled) -> sign in to the user's own account -> local voice (mic, level meter, transcript
+test, speaking test). Styled from the active MAGI theme
 (~/.config/hypr/themes/current/colors.css), like the control centre.
 
   magi-pilot-setup            open (magi-agent firstrun opens it once, on the first login)
@@ -24,7 +25,9 @@ HOME = os.path.expanduser("~")
 COLORS = HOME + "/.config/hypr/themes/current/colors.css"
 STATE = os.path.join(os.environ.get("XDG_STATE_HOME", HOME + "/.local/state"), "magi/agent")
 CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME", HOME + "/.config"), "magi/agent.conf")
-LICENCE = "https://code.claude.com/docs/en/legal-and-compliance"
+AGENTS_PY = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib", "magi_agents.py")
+CHOICES = [("claude", "CLAUDE CODE", "Anthropic"), ("opencode", "OPENCODE", "open source, many providers"),
+           ("codex", "CODEX", "OpenAI"), ("custom", "CUSTOM COMMAND", "any terminal agent")]
 
 CSS = """
 @import url("file://%s");
@@ -68,7 +71,7 @@ switch slider { background: @text; min-width: 16px; min-height: 16px; }
 .status.err { color: @bad; } .status.ok { color: @good; } .status.warn { color: @warn; }
 """ % COLORS
 
-STEPS = ["ORCHESTRATOR", "CLAUDE CODE", "SIGN IN", "VOICE"]
+STEPS = ["ORCHESTRATOR", "AGENT", "SIGN IN", "VOICE"]
 
 
 def lbl(text, *cls, wrap=False, xalign=0.0, hexpand=False):
@@ -99,15 +102,25 @@ def which(cmd):
 
 
 def set_conf(key, value):
+    import shlex
     os.makedirs(os.path.dirname(CONF), exist_ok=True)
     lines = open(CONF).read().splitlines() if os.path.exists(CONF) else []
-    lines = [l for l in lines if not l.startswith(key + "=")] + [f"{key}={value}"]
+    lines = [l for l in lines if not l.startswith(key + "=")] + [f"{key}={shlex.quote(str(value))}"]
     open(CONF, "w").write("\n".join(lines) + "\n")
 
 
 def touch(name):
     os.makedirs(STATE, exist_ok=True)
     open(os.path.join(STATE, name), "a").close()
+
+
+def agent_info(name=None):
+    try:
+        out = subprocess.run([sys.executable, AGENTS_PY, "info", *([name] if name else [])],
+                             capture_output=True, text=True, timeout=15).stdout
+        return json.loads(out)
+    except Exception:
+        return {"name": name or "claude", "label": name or "agent", "installed": False}
 
 
 def sources():
@@ -223,13 +236,15 @@ class Pilot(Gtk.ApplicationWindow):
         self.frame(0, "TALK TO ONE AGENT. IT RUNS THE OTHERS.", [
             btn("NOT NOW", self.not_now), btn("SET UP", lambda: self.step_install(), primary=True)])
         for t in [
-            "MAGI can run an orchestrator: one Claude Code session in tmux window 1 of the session "
-            "\"magi\". You speak or type to it. It starts other agents in their own windows, checks "
-            "their work, drives the desktop with hyprctl, and asks you only for decisions.",
+            "MAGI can run an orchestrator agent (Claude Code, opencode, Codex, or any terminal agent) "
+            "in tmux window 1 of the session \"magi\". You speak or type to it. It starts other "
+            "agents in their own windows, checks their work, drives the desktop with hyprctl, and "
+            "asks you only for decisions.",
             "Local: speech recognition (faster-whisper), the spoken replies (Piper), tmux, the bar "
             "status. Audio never leaves this machine.",
-            "Sent to Anthropic: the text you say or type to the orchestrator, and what its agents "
-            "read and write, as with any Claude Code session. You sign in with your own account.",
+            "Sent to the agent's model provider: the text you say or type to the orchestrator, and "
+            "what its agents read and write, as with any session of that agent. You sign in with "
+            "your own account.",
             "Open it any time with SUPER+`, the ◉ module in the bar, or the AGENTS page of the "
             "control centre (SUPER+SHIFT+SPACE). SUPER+SHIFT+M mutes the listener.",
         ]:
@@ -239,35 +254,77 @@ class Pilot(Gtk.ApplicationWindow):
 
     # ------------------------------------------------------------ 2
     def step_install(self):
-        self.frame(1, "INSTALL CLAUDE CODE", [
+        self.frame(1, "PICK THE ORCHESTRATOR AGENT", [
             btn("SKIP", lambda: self.step_signin()),
             btn("INSTALL", self.install, primary=True),
             btn("NEXT", lambda: self.step_signin())])
         self.next_btn = self.btns.get_last_child()
         self.inst_btn = self.next_btn.get_prev_sibling()
-        path = which("claude")
-        self.inst_state = self.kv("CLAUDE CODE", path or "not installed", "good" if path else "warn")
-        self.body.append(lbl(
-            "MAGI does not include Claude Code. INSTALL runs Anthropic's official installer for "
-            "your user (curl -fsSL https://claude.ai/install.sh | bash, into ~/.local/bin). Claude "
-            "Code is Anthropic's software under Anthropic's terms:", "p", wrap=True))
-        self.body.append(lbl(LICENCE, "dim"))
+        cur = agent_info().get("name", "claude")
+        group = None
+        self.radios = {}
+        for key, title, who in CHOICES:
+            row = Gtk.Box(spacing=8)
+            row.add_css_class("kv")
+            r = Gtk.CheckButton(label=title)
+            if group:
+                r.set_group(group)
+            group = group or r
+            r.set_active(key == cur)
+            r.connect("toggled", lambda w, k=key: w.get_active() and self.pick(k))
+            self.radios[key] = r
+            row.append(r)
+            row.append(lbl(who, "dim", hexpand=True))
+            self.body.append(row)
+        self.custom = Gtk.Entry(placeholder_text="command that starts your agent, e.g. aider --model ...")
+        self.custom.connect("changed", lambda *_: self.radios["custom"].get_active() and self.pick("custom", typing=True))
+        self.body.append(self.custom)
+        self.inst_state = self.kv("STATUS", "")
+        self.inst_note = lbl("", "p", wrap=True)
+        self.body.append(self.inst_note)
         sw = Gtk.ScrolledWindow(vexpand=True)
         self.out = Gtk.TextView(editable=False, monospace=True, cursor_visible=False)
         self.out.set_wrap_mode(Gtk.WrapMode.CHAR)
         sw.set_child(self.out)
         sw.add_css_class("log")
         self.body.append(sw)
-        self.inst_btn.set_sensitive(not path)
+        self.pick(cur)
+
+    def pick(self, key, typing=False):
+        self.agent = key
+        if key == "custom":
+            cmd = self.custom.get_text().strip()
+            if cmd:
+                subprocess.run(["magi-agent", "use", "custom", cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            subprocess.run(["magi-agent", "use", key], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.custom.set_visible(key == "custom")
+        info = agent_info(key)
+        self.info = info
+        path = info.get("path") if info.get("installed") else None
+        self.inst_state.set_text(path or ("command not found" if key == "custom" else "not installed"))
+        for k in ("good", "warn"):
+            self.inst_state.remove_css_class(k)
+        self.inst_state.add_css_class("good" if path else "warn")
+        if key == "custom":
+            self.inst_note.set_text("Any agent that runs in a terminal. It starts in a folder whose AGENTS.md "
+                                    "holds MAGI's orchestrator instructions ($MAGI_INSTRUCTIONS has the path). "
+                                    "It can't be resumed after a reboot; it starts fresh.")
+        else:
+            self.inst_note.set_text("MAGI does not include %s. INSTALL runs %s, for your user:\n%s\n%s" % (
+                info.get("label"), info.get("install_note"), info.get("install_shown"), info.get("licence", "")))
+        self.inst_btn.set_sensitive(not path and key != "custom")
         self.next_btn.set_sensitive(bool(path))
         if path:
             self.next_btn.add_css_class("primary")
+        else:
+            self.next_btn.remove_css_class("primary")
 
     def install(self):
         self.inst_btn.set_sensitive(False)
-        self.say("INSTALLING · ANTHROPIC'S INSTALLER", "warn")
+        self.say("INSTALLING · %s" % self.info.get("label", "").upper(), "warn")
         buf = self.out.get_buffer()
-        proc = Gio.Subprocess.new(["magi-agent", "install-claude"],
+        proc = Gio.Subprocess.new(["magi-agent", "install", self.agent],
                                   Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE)
         stream = Gio.DataInputStream.new(proc.get_stdout_pipe())
 
@@ -285,14 +342,9 @@ class Pilot(Gtk.ApplicationWindow):
 
         def done(p, res):
             p.wait_finish(res)
-            path = which("claude")
-            if p.get_successful() and path:
-                self.inst_state.set_text(path)
-                self.inst_state.remove_css_class("warn")
-                self.inst_state.add_css_class("good")
+            if p.get_successful() and agent_info(self.agent).get("installed"):
+                self.pick(self.agent)
                 self.say("INSTALLED", "ok")
-                self.next_btn.set_sensitive(True)
-                self.next_btn.add_css_class("primary")
             else:
                 self.say("INSTALL FAILED · OFFLINE? TRY AGAIN", "err")
                 self.inst_btn.set_sensitive(True)
@@ -301,7 +353,9 @@ class Pilot(Gtk.ApplicationWindow):
 
     # ------------------------------------------------------------ 3
     def step_signin(self):
-        self.frame(2, "SIGN IN TO YOUR CLAUDE ACCOUNT", [
+        info = agent_info()
+        self.info = info
+        self.frame(2, "SIGN IN TO YOUR %s ACCOUNT" % info.get("label", "AGENT").upper(), [
             btn("SKIP", lambda: self.step_voice()),
             btn("OPEN CONSOLE", self.signin, primary=True),
             btn("NEXT", lambda: self.step_voice())])
@@ -309,10 +363,18 @@ class Pilot(Gtk.ApplicationWindow):
         self.next_btn.set_sensitive(False)
         self.auth_state = self.kv("ACCOUNT", "checking...")
         self.kv("ORCHESTRATOR", "tmux session magi · window 1")
-        self.body.append(lbl(
-            "OPEN CONSOLE turns the orchestrator on (it starts at every login from now on) and drops "
-            "down its console. Window 1 runs `claude auth login`: follow the link in your browser. "
-            "This step continues by itself once you are signed in.", "p", wrap=True))
+        if info.get("has_signin"):
+            text = ("OPEN CONSOLE turns the orchestrator on (it starts at every login from now on) and "
+                    "drops down its console. Window 1 runs `%s`: follow the link it prints. This step "
+                    "continues by itself once you are signed in." % info.get("login"))
+        elif info.get("name") == "opencode":
+            text = ("OPEN CONSOLE turns the orchestrator on (it starts at every login from now on) and "
+                    "drops down its console. opencode runs without an account on its free models. To "
+                    "use your own provider or OpenCode account, type /connect in the console.")
+        else:
+            text = ("OPEN CONSOLE turns the orchestrator on (it starts at every login from now on) and "
+                    "drops down its console. Sign in there however your agent does it.")
+        self.body.append(lbl(text, "p", wrap=True))
         self.body.append(lbl("Turn it off later with `magi-agent off` or the AGENTS page.", "dim", wrap=True))
         self.check_auth()
         self.poll = GLib.timeout_add_seconds(2, self.check_auth)
@@ -324,15 +386,22 @@ class Pilot(Gtk.ApplicationWindow):
         self.say("CONSOLE OPEN · SIGN IN THERE", "warn")
 
     def check_auth(self):
-        if not which("claude"):
-            self.auth_state.set_text("Claude Code not installed (step 2)")
-            return True
+        if not self.info.get("installed"):
+            self.info = agent_info()
+            if not self.info.get("installed"):
+                self.auth_state.set_text("%s not installed (step 2)" % self.info.get("label"))
+                return True
+        if not self.info.get("has_signin"):
+            self.auth_state.set_text("no sign-in needed by MAGI")
+            self.next_btn.set_sensitive(True)
+            self.next_btn.add_css_class("primary")
+            return False
 
         def done(p, res):
             try:
-                _, out, _ = p.communicate_utf8_finish(res)
-                ok = json.loads(out or "{}").get("loggedIn")
-            except Exception:
+                p.wait_finish(res)
+                ok = p.get_successful()
+            except GLib.Error:
                 ok = False
             if ok:
                 self.auth_state.set_text("SIGNED IN")
@@ -343,9 +412,9 @@ class Pilot(Gtk.ApplicationWindow):
             else:
                 self.auth_state.set_text("not signed in")
 
-        p = Gio.Subprocess.new(["claude", "auth", "status", "--json"],
-                               Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE)
-        p.communicate_utf8_async(None, None, done)
+        p = Gio.Subprocess.new([sys.executable, AGENTS_PY, "signed-in"],
+                               Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_SILENCE)
+        p.wait_async(None, done)
         return True
 
     # ------------------------------------------------------------ 4

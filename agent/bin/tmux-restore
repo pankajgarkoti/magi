@@ -2,14 +2,19 @@
 """Rebuild the tmux layout saved by tmux-snapshot (run at boot by tmux-restore.service).
 
 Idempotent: a window is only created if its session has no window with that name, so it is
-safe to run while tmux is already up (e.g. you opened a terminal first). Claude panes come
-back with `claude --resume <id>`; when that exits you land in a shell in the same folder.
+safe to run while tmux is already up (e.g. you opened a terminal first). Agent panes come
+back with their agent's resume command (`claude --resume <id>`, `opencode --session <id>`,
+`codex resume <id>`), or start fresh when the agent can't resume; when that exits you land in
+a shell in the same folder. The orchestrator comes back through `magi-agent orchestrator`.
 
   tmux-restore              restore from ~/.local/state/tmux-snapshot/layout.json
   tmux-restore FILE         restore from an older snapshot (see history/)
   tmux-restore --dry-run    print what it would do
 """
 import json, os, pathlib, shlex, subprocess, sys
+
+sys.path.insert(0, str(pathlib.Path(os.path.realpath(__file__)).parent.parent / "lib"))
+import magi_agents  # noqa: E402
 
 HOME = pathlib.Path.home()
 STATE = HOME / ".local/state/tmux-snapshot"
@@ -24,9 +29,19 @@ def tmux(*args, check=False):
 
 
 def pane_cmd(p):
-    if p["kind"] == "claude":
-        cmd = ["claude", "--resume", p["session_id"], *p.get("flags", [])]
-        return " ".join(shlex.quote(c) for c in cmd) + "; exec bash"
+    q = lambda argv: " ".join(shlex.quote(c) for c in argv)
+    if p["kind"] == "claude":  # snapshots from before the adapter layer
+        p = dict(p, kind="agent", agent="claude")
+    if p["kind"] == "orchestrator":
+        # resume only when the orchestrator still uses the same agent; otherwise start the new one
+        same = p.get("agent") == magi_agents.get().name and magi_agents.get().resumable
+        return q(["magi-agent", "orchestrator", *(["--resume", p["session_id"]] if same and p.get("session_id") else [])])
+    if p["kind"] == "agent":
+        a = magi_agents.get(p.get("agent", "claude"))
+        cmd = a.resume_cmd(p.get("session_id"), p.get("flags", []), p.get("cwd"))
+        if cmd is None:  # no resume for this agent: start it fresh in the same folder
+            cmd, _, _ = a.launch("agents")
+        return q(cmd) + "; exec bash"
     if p["kind"] == "command":
         c = p["command"]
         return c if "exec bash" in c else f"{c}; exec bash"

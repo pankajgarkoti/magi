@@ -53,10 +53,16 @@ daemons are running. It prints the PATH GDM gave Hyprland.
    ```
 2. Install: `tests/vm/run-distro-vm.sh --iso ~/vm/magi-distro/magi-test.iso` (powers off when
    done), then boot from disk: `tests/vm/run-distro-vm.sh` (ssh on `localhost:2223`).
-3. Agent layer: copy `tests/agent/{claude-stub,install-stub.sh}` and `tests/vm/test-agent.sh`
-   to `/var/tmp/magi-test/` in the VM, then `test-agent.sh setup`, reboot, `test-agent.sh
-   reboot`; with the VM's link down (QMP `set_link n0 off`), `test-agent.sh offline`.
-   The stub stands in for Claude Code; nothing needs an account.
+3. Agent layer: copy `tests/agent/{agent-stub,install-stub.sh}` and `tests/vm/test-agent.sh`
+   to `/var/tmp/magi-test/` in the VM, then `AGENT=claude test-agent.sh setup`, reboot,
+   `AGENT=claude test-agent.sh reboot`; with the VM's link down (QMP `set_link n0 off`),
+   `test-agent.sh offline`. `test-agent.sh reset` clears the agent layer, then repeat with
+   `AGENT=opencode` (or `codex`). The stub stands in for each agent; nothing needs an account.
+
+Without a VM, `tests/agent/test-adapters.sh` runs the same adapter checks (install, sign-in,
+states, spawn, snapshot/restore, reaper) for all four adapters in a throwaway HOME, and
+`tests/agent/test-opencode-real.sh` / `test-codex-real.sh` run the real binaries headless
+against `tests/agent/fake-provider.py`.
 4. Update and rollback: push a second build to `127.0.0.1:5000/magi:latest`, then in the VM
    `sudo bootc upgrade`, reboot, check `/usr/share/magi/IMAGE_VERSION`, `sudo bootc rollback`,
    reboot, check again.

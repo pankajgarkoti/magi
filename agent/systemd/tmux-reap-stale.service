@@ -1,5 +1,5 @@
 [Unit]
-Description=Close idle Claude Code sessions in tmux (log: ~/.local/state/tmux-reap/closed.log)
+Description=Close idle agent sessions in tmux (log: ~/.local/state/tmux-reap/closed.log)
 
 [Service]
 Type=oneshot
