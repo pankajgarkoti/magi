@@ -26,6 +26,7 @@ Settings, ~/.config/magi/agent.conf (shell syntax):
   AGENT_BUSY_RE / AGENT_ASK_RE         custom: regexes for its working / asking screens
   AGENT_PROMPT='> '                    custom: its prompt, so a typed draft is never reaped
   AGENT_ARGS='...'                     extra arguments for the orchestrator (any agent)
+  NOTIFY=0                             spawn: don't message the orchestrator when a worker finishes
 
 CLI (used by magi-agent and the setup window):
   magi_agents.py name [orchestrator|agents]     configured adapter name
@@ -36,6 +37,8 @@ CLI (used by magi-agent and the setup window):
   magi_agents.py login [NAME]                   run the agent's sign-in
   magi_agents.py run-orchestrator [--resume ID] exec the orchestrator agent (tmux window 1)
   magi_agents.py spawn WINDOW DIR [BRIEF] [--agent NAME]   start an agent in a new tmux window
+  magi_agents.py watch WINDOW                   (started by spawn) message the orchestrator when it finishes/asks
+  magi_agents.py wait WINDOW                    block until the agent in WINDOW finishes, asks or exits
   magi_agents.py rows                           one TSV line per agent pane (bar, AGENTS page)
   magi_agents.py list                           JSON for every agent pane
 """
@@ -238,6 +241,15 @@ class Agent:
     def saved_flags(self, argv):
         return []
 
+    def screen_state(self, screen):
+        """idle / busy / asking from the text of the pane."""
+        tail = screen_tail(None, screen=screen)
+        if re.search(self.ask_re, tail, re.I):
+            return "asking"
+        if re.search(self.busy_re, tail, re.I):
+            return "busy"
+        return "idle"
+
     def draft(self, pane):
         if not self.prompt_char:
             return False
@@ -385,6 +397,40 @@ class OpenCode(Agent):
 
     def resume_cmd(self, session_id, flags, cwd):
         return [self.path() or "opencode", "--session", session_id, *flags] if session_id else None
+
+    def screen_state(self, screen):
+        # read the bottom of the screen, not the conversation above it (a reply that quotes
+        # "Allow once" is not a prompt): a dialog replaces the input box and ends in key hints,
+        # the footer says "esc interrupt" while it works, and the input box means it is idle
+        lines = [l for l in screen.splitlines() if l.strip()]
+        bottom = "\n".join(lines[-6:])
+        if re.search(r"⇆ select|enter confirm", bottom):
+            return "asking"
+        if re.search(self.busy_re, "\n".join(lines[-3:]), re.I):
+            return "busy"
+        if re.search(r"^\s*┃\s+(Build|Plan)\b.*·", bottom, re.M):
+            return "idle"
+        return super().screen_state(screen)
+
+    def draft(self, pane):
+        # the input box is the run of "┃" lines above the one naming the mode and model
+        # ("┃  Build · <model>"); its placeholder is grey (128,128,128), typed text is not
+        lines = sh("tmux", "capture-pane", "-p", "-e", "-t", pane).splitlines()
+        plain = [re.sub(r"\x1b\[[0-9;]*m", "", l) for l in lines]
+        mode = [i for i, l in enumerate(plain) if re.match(r"\s*┃\s+(Build|Plan)\b.*·", l)]
+        if not mode:
+            return False
+        i = mode[-1] - 1
+        while i >= 0 and plain[i].lstrip().startswith("┃"):
+            fg = None
+            for tok in re.split(r"(\x1b\[[0-9;]*m)", lines[i].split("┃", 1)[1]):
+                if tok.startswith("\x1b["):
+                    m = re.search(r"38;2;(\d+;\d+;\d+)", tok)
+                    fg = m.group(1) if m else fg
+                elif tok.strip() and fg != "128;128;128":
+                    return True
+            i -= 1
+        return False
 
 
 class Codex(Agent):
@@ -612,13 +658,7 @@ def screen_tail(pane, n=15, screen=None):
 def pane_state(a, pane):
     """(state, screen hash) read from the pane."""
     screen = sh("tmux", "capture-pane", "-p", "-t", pane)
-    tail = screen_tail(pane, screen=screen)
-    h = hashlib.sha1(screen.encode()).hexdigest()[:16]
-    if re.search(a.ask_re, tail, re.I):
-        return "asking", h
-    if re.search(a.busy_re, tail, re.I):
-        return "busy", h
-    return "idle", h
+    return a.screen_state(screen), hashlib.sha1(screen.encode()).hexdigest()[:16]
 
 
 def _load_track():
@@ -657,7 +697,7 @@ def agents(c=None):
             st, since = nat["state"], nat.get("since") or now
             sid, scwd = nat.get("session_id"), nat.get("cwd") or cwd
             source = a.state_source
-            if st != "asking" and re.search(a.ask_re, screen_tail(pane), re.I):
+            if st != "asking" and a.screen_state(sh("tmux", "capture-pane", "-p", "-t", pane)) == "asking":
                 st = "asking"
         else:
             # idle time: how long the pane has shown the same idle screen; any change restarts it,
@@ -676,6 +716,92 @@ def agents(c=None):
     live = {r["pane"] for r in out}
     _save_track({k: v for k, v in track.items() if k in live})
     return out
+
+
+# ---------------------------------------------------------------- worker events
+
+def _window_alive(window):
+    return window in sh("tmux", "list-windows", "-t", f"={SESSION}", "-F", "#W").splitlines()
+
+
+def events(window, settle=None, poll=3):
+    """Yield (event, row) for the agent in WINDOW of session magi, until the window closes:
+    "done" once it has worked and then stayed idle for `settle` seconds, "asking" when it shows
+    a prompt, "exited" when the agent process quit but the window is still there. A worker that is
+    sent back to work and finishes again gives another "done"."""
+    settle = float(os.environ.get("MAGI_EVENT_SETTLE", 15)) if settle is None else settle
+    worked, idle_at, asked, gone = False, None, False, 0
+    start = time.time()
+    while True:
+        row = next((r for r in agents() if r["session"] == SESSION and r["window"] == window), None)
+        if row is None:
+            if not _window_alive(window):
+                return   # closed (by the orchestrator, the reaper or the user): nothing to report
+            # no agent process yet (starting up), or it quit and left its shell
+            if worked or time.time() - start > 60:
+                gone += 1
+                if gone >= 2:
+                    yield "exited", {"window": window, "pane": None}
+                    return
+            time.sleep(poll)
+            continue
+        gone = 0
+        st = row["state"]
+        if st == "asking":
+            if not asked:
+                asked = True
+                yield "asking", row
+            idle_at = None
+        elif st == "busy":
+            worked, asked, idle_at = True, False, None
+        else:
+            asked = False
+            idle_at = idle_at or time.time()
+            # never saw it busy: an agent that finished between two polls still counts after a minute
+            if (worked or time.time() - start > 60) and time.time() - idle_at >= settle:
+                yield "done", row
+                worked, idle_at, start = False, None, float("inf")
+        time.sleep(poll)
+
+
+def event_line(window, ev, row):
+    pane = row.get("pane")
+    see = f" Read it: tmux capture-pane -p -t {pane} -S -80" if pane else ""
+    what = {"done": "finished and is idle", "asking": "is waiting on a prompt", "exited": "exited"}[ev]
+    return f"[magi] window {window} ({row.get('agent', 'agent')}) {what}.{see}"
+
+
+def deliver_to_orchestrator(text, wait=600, poll=3):
+    """Type a line into the orchestrator's pane once it is idle and its input box is empty, so it
+    never lands in the middle of a turn or of something the user is typing."""
+    c = conf()
+    end = time.time() + wait
+    while time.time() < end:
+        o = next((r for r in agents(c) if r["session"] == SESSION and r["window"] == "orchestrator"), None)
+        if o and o["state"] == "idle":
+            a = get(o["agent"], c=c)
+            if not a.draft(o["pane"]):
+                subprocess.run(["tmux", "send-keys", "-t", o["pane"], "-l", text])
+                time.sleep(0.5)
+                subprocess.run(["tmux", "send-keys", "-t", o["pane"], "Enter"])
+                return True
+        time.sleep(poll)
+    return False
+
+
+def watch(window):
+    """Started by spawn, detached: tell the orchestrator each time the worker finishes, asks or exits."""
+    for ev, row in events(window):
+        line = event_line(window, ev, row)
+        _log(f"{window}: {ev}")
+        deliver_to_orchestrator(line)
+    return 0
+
+
+def _log(msg):
+    STATE.mkdir(parents=True, exist_ok=True)
+    with open(STATE / "events.log", "a") as f:
+        f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + msg + "\n")
 
 
 # ---------------------------------------------------------------- CLI
@@ -770,7 +896,20 @@ def main(argv):
             rc = _tmux_new_window(window, cwd, largv, env)
         if rc == 0:
             print(f"started {a.label} in ={SESSION}:={window} ({cwd})")
+            if conf().get("NOTIFY", "1") != "0":
+                # the orchestrator gets a "[magi] window ... finished" line when this worker is done
+                subprocess.Popen([sys.executable, os.path.realpath(__file__), "watch", window],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=True)
+                print(f"you will get a [magi] message in your input when {window} finishes or asks")
         return rc
+    if cmd == "watch" and rest:
+        return watch(rest[0])
+    if cmd == "wait" and rest:
+        for ev, row in events(rest[0]):
+            print(event_line(rest[0], ev, row))
+            return 0 if ev == "done" else 1
+        return 1
     if cmd == "rows":
         for r in agents():
             print("\t".join([r["window"], r["state"], str(r["idle_min"]), r["session"], r["agent"], r["pane"]]))

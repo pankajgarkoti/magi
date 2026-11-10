@@ -41,6 +41,7 @@ run_adapter() {
   export PATH=$T/bin:$REPO/agent/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
   LOG=$HOME/.magi-stub/$name.log
   printf 'ENABLED=1\nVOICE=0\nCONSOLE_AT_LOGIN=0\n' > "$XDG_CONFIG_HOME/magi/agent.conf"
+  export MAGI_EVENT_SETTLE=3
   echo "Fix the failing test in proj." > "$T/brief.txt"
 
   if [ "$name" = custom ]; then
@@ -97,6 +98,14 @@ run_adapter() {
   check "AGENTS data: sub1 busy" waitfor 4 is_win sub1 busy
   check "bar class busy-agent doesn't change orchestrator IDLE" is_orch IDLE
   check "AGENTS data: sub1 idle again" waitfor 10 is_win sub1 idle
+  check "spawn's watcher: the orchestrator gets '[magi] window sub1 ... finished'" \
+    waitfor 20 grep -q "received: \[magi\] window sub1 ($name) finished and is idle" "$LOG"
+  check "watcher message names the pane to read" grep -q "received: \[magi\] window sub1 .*capture-pane -p -t %" "$LOG"
+  check "orchestrator IDLE after answering it" waitfor 10 is_orch IDLE
+  send sub1 "ask"
+  check "spawn's watcher: '[magi] window sub1 ... waiting on a prompt'" \
+    waitfor 20 grep -q "received: \[magi\] window sub1 ($name) is waiting on a prompt" "$LOG"
+  send sub1 "n"; waitfor 6 is_win sub1 idle
 
   # snapshot -> tmux restart -> restore
   tmux-snapshot
