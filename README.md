@@ -49,20 +49,36 @@ you can log out and pick GNOME again.
 
 ## Get it
 
-**MAGI image (Fedora Atomic, bootc).** A bootable container image with everything above. It is
-installed from an ISO and updated atomically: `sudo bootc upgrade` stages the next image, and
-`sudo bootc rollback` returns to the previous one. No ISO or image is published yet. To build
-both locally (podman only, no root):
+**Install from the ISO (new machine or VM).** Download
+[magi-44-x86_64.iso](https://archive.org/download/magi-44-x86_64/magi-44-x86_64.iso) (4.8 GB,
+hosted on the Internet Archive) and write it to a USB stick or boot it in a VM.
+
+```
+sha256  cf30def4367d2395558349c4becd1c6e29806f5f5b968bbaf01c664bb5e20ebb
+```
+
+The ISO is Fedora's netinstall boot media plus the MAGI image (installed offline from the ISO)
+and a kickstart. Anaconda asks for the disk; GNOME Initial Setup creates the user. The login
+screen defaults to the MAGI session.
+
+**Switch an existing Fedora Atomic system** (Silverblue, Kinoite and other Atomic editions;
+not Workstation):
+
+```bash
+sudo bootc switch ghcr.io/pankajgarkoti/magi:latest
+```
+
+Updates are atomic: `sudo bootc upgrade` stages the next image, and `sudo bootc rollback`
+returns to the previous one.
+
+**Build it yourself** (podman only, no root):
 
 ```bash
 podman build -f distro/Containerfile -t localhost/magi:latest .
 distro/build-iso.sh --image localhost/magi:latest --out magi-44-x86_64.iso
 ```
 
-The ISO is Fedora's netinstall boot media plus the MAGI image (installed offline from the ISO)
-and a kickstart. Anaconda asks for the disk; GNOME Initial Setup creates the user. The login
-screen defaults to the MAGI session. See [`distro/`](distro) and the VM test in
-[`tests/vm/`](tests/vm).
+See [`distro/`](distro) and the VM test in [`tests/vm/`](tests/vm).
 
 **On an existing Fedora 44 Workstation:** `install.sh` below sets up the same desktop, with
 backups and an uninstall script. The orchestrator layer is a separate opt-in step:
