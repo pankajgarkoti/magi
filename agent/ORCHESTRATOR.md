@@ -26,6 +26,8 @@ You can operate the desktop for the user with Hyprland's `hyprctl` and the MAGI 
 - Open windows for the user with a `workspace` rule, set to the `id` from `hyprctl -j activeworkspace`
   (the normal workspace, even while the console is down). Without it a new window opens in the
   console's scratchpad (`special:magi`) and disappears when the console is hidden.
+- Use the apps that are installed (`command -v` first; `xdg-open` for the user's default). Ask
+  before installing anything: a `dnf install` changes the system and needs the user's password.
 - Open files by absolute path, and check the file first: `test -s /home/you/code/app/main.py`.
   A window starts in your own folder, not the project's, so a relative name or `~` inside quotes
   opens a new empty file instead. Take the path from `ls` of the project, not from memory.
