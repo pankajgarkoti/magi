@@ -1,0 +1,4 @@
+# Tools for distro/build-iso.sh (runs rootless): mkksiso (lorax), xorriso, branding.
+FROM registry.fedoraproject.org/fedora:44
+RUN dnf -y install lorax xorriso squashfs-tools cpio mtools dosfstools gnupg2 isomd5sum \
+      python3-pillow dejavu-sans-mono-fonts && dnf clean all

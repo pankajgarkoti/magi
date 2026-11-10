@@ -1,0 +1,74 @@
+# Builds the MAGI bootc image on every push and pull request (and checks it with
+# `bootc container lint`, which runs inside the build). Nothing is published unless the
+# repository variable MAGI_PUBLISH is set to "true": then pushes to main publish the image
+# to ghcr.io/<owner>/magi. The installer ISO is built only on manual dispatch and is
+# uploaded as a workflow artifact only when the "upload_iso" input is ticked.
+name: distro
+
+on:
+  push:
+    paths-ignore: ["docs/**", "*.md"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      build_iso:
+        description: "Also build the installer ISO"
+        type: boolean
+        default: false
+      upload_iso:
+        description: "Upload the ISO as a workflow artifact (kept 3 days)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/magi
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Free disk space (the image is ~7 GB unpacked)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af >/dev/null
+          df -h /
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          podman build -f distro/Containerfile \
+            --build-arg MAGI_VERSION="$(date -u +%Y%m%d).${GITHUB_SHA::7}" \
+            -t localhost/magi:latest .
+          podman images localhost/magi
+      - name: Smoke test
+        run: |
+          podman run --rm localhost/magi:latest sh -euc '
+            grep "^PRETTY_NAME=" /usr/lib/os-release
+            if rpm -q fedora-logos; then echo fedora-logos present; exit 1; fi
+            for t in eva-wifi magi magi-overview wall-next magi-agent magi-listen hud-say; do command -v "$t"; done
+            Hyprland --version | head -1
+            test -f /usr/lib/magi/voice/models/whisper-base.en/model.bin
+            test -f /usr/lib/magi/voice/voices/en_US-ljspeech-medium.onnx
+            if ls /usr/share/magi/wallpapers/*.jpg /usr/share/magi/wallpapers/*.png 2>/dev/null; then echo wallpapers shipped; exit 1; fi
+            if command -v claude; then echo claude shipped; exit 1; fi'
+      - name: Publish (only with MAGI_PUBLISH=true, only from main)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push' && vars.MAGI_PUBLISH == 'true'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+          podman tag localhost/magi:latest "$IMAGE:latest" "$IMAGE:${GITHUB_SHA::7}"
+          podman push "$IMAGE:latest"
+          podman push "$IMAGE:${GITHUB_SHA::7}"
+      - name: Installer ISO (manual dispatch only)
+        if: github.event_name == 'workflow_dispatch' && inputs.build_iso
+        run: distro/build-iso.sh --image localhost/magi:latest --ref "$IMAGE:latest" --out magi-44-x86_64.iso --work "$RUNNER_TEMP/iso"
+      - name: Upload ISO (manual opt-in only)
+        if: github.event_name == 'workflow_dispatch' && inputs.build_iso && inputs.upload_iso
+        uses: actions/upload-artifact@v4
+        with:
+          name: magi-44-x86_64-iso
+          path: magi-44-x86_64.iso
+          retention-days: 3

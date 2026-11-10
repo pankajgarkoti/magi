@@ -24,3 +24,39 @@ A full install on a real Fedora 44 Workstation, in QEMU/KVM, headless.
 4. **Session setup for screenshots** (test only): `tests/vm/vm-session-setup.sh` turns on GDM
    autologin into Hyprland and adds simulated Wi-Fi networks; then reboot.
 5. Screenshots are taken **inside the VM** with `grim` over the VM's own Hyprland session.
+
+## Login PATH regression test (both install paths)
+
+`test-login-path.sh` runs in the VM as the desktop user after a real reboot and GDM
+(auto)login. It checks that a command run through Hyprland's own exec (the path a key binding
+takes) and waybar (whose on-click commands inherit its environment) both resolve `eva-wifi`,
+`magi`, `magi-overview` and `wall-next`, and that the `eva-wifi`, `magi` and `magi-overview`
+daemons are running. It prints the PATH GDM gave Hyprland.
+
+- install.sh VM: sync a checkout to `~/.local/share/magi`, `./install.sh --update`, reboot, run.
+  To see it fail, comment out the `hl.env("PATH", ...)` line and move
+  `~/.config/environment.d/50-magi-path.conf` away, then reboot.
+- Distro VM: the image links every MAGI tool into `/usr/bin`. To see it fail, build a variant
+  without that (and without the PATH lines): `--build-arg MAGI_PATH_FIX=none` (or `usrbin`:
+  /usr/bin links only), push it to the local registry, `sudo bootc switch` to it, reboot, run.
+
+## MAGI distro VM
+
+1. Build the image and a test ISO (`distro-ks.cfg`: unattended, user `pilot`/`magi`,
+   GDM autologin, updates from the host's local registry):
+   ```bash
+   podman build -f distro/Containerfile -t localhost/magi:latest .
+   podman run -d --name magi-registry -p 127.0.0.1:5000:5000 docker.io/library/registry:2
+   podman push --tls-verify=false localhost/magi:latest 127.0.0.1:5000/magi:latest
+   distro/build-iso.sh --ks tests/vm/distro-ks.cfg --ref 10.0.2.2:5000/magi:latest \
+     --boot-iso ~/vm/magi-test/dl/netinst.iso --out ~/vm/magi-distro/magi-test.iso
+   ```
+2. Install: `tests/vm/run-distro-vm.sh --iso ~/vm/magi-distro/magi-test.iso` (powers off when
+   done), then boot from disk: `tests/vm/run-distro-vm.sh` (ssh on `localhost:2223`).
+3. Agent layer: copy `tests/agent/{claude-stub,install-stub.sh}` and `tests/vm/test-agent.sh`
+   to `/var/tmp/magi-test/` in the VM, then `test-agent.sh setup`, reboot, `test-agent.sh
+   reboot`; with the VM's link down (QMP `set_link n0 off`), `test-agent.sh offline`.
+   The stub stands in for Claude Code; nothing needs an account.
+4. Update and rollback: push a second build to `127.0.0.1:5000/magi:latest`, then in the VM
+   `sudo bootc upgrade`, reboot, check `/usr/share/magi/IMAGE_VERSION`, `sudo bootc rollback`,
+   reboot, check again.

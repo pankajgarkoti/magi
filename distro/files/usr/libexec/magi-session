@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# MAGI login session (GDM: "MAGI"). On the first login it links the MAGI configs from the
+# image into $HOME with /usr/share/magi/install.sh --no-packages (anything it would replace
+# goes to ~/.magi-backup/<timestamp>/ first). After an image update it re-links, so new
+# files show up. Missing wallpapers download in the background. Then Hyprland starts.
+# Log: ~/.local/state/magi/session.log
+MAGI=/usr/share/magi
+state=${XDG_STATE_HOME:-$HOME/.local/state}/magi
+mkdir -p "$state"
+log=$state/session.log
+image=$(cat "$MAGI/IMAGE_VERSION" 2>/dev/null || echo unknown)
+{
+  echo "== $(date -Is) MAGI session, image $image"
+  if [ ! -f "$state/installed" ]; then
+    "$MAGI/install.sh" --no-packages --no-wallpapers
+  elif [ "$(cat "$state/image" 2>/dev/null)" != "$image" ]; then
+    "$MAGI/install.sh" --update --no-packages --no-wallpapers
+  fi
+  echo "$image" > "$state/image"
+} >> "$log" 2>&1
+# EVA wallpapers: download what is missing (quick no-op once they are all there)
+( "$MAGI/install.sh" --wallpapers-only >> "$log" 2>&1 & )
+if command -v start-hyprland >/dev/null; then exec start-hyprland; fi
+exec Hyprland

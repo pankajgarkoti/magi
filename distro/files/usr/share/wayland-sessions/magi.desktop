@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=MAGI
+Comment=Hyprland with the MAGI configs, themes and panels
+Exec=/usr/libexec/magi-session
+Type=Application
+DesktopNames=Hyprland

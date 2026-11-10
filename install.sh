@@ -3,6 +3,7 @@
 #
 #   bash <(curl -fsSL https://raw.githubusercontent.com/pankajgarkoti/magi/main/install.sh)
 #   ./install.sh [--dry-run] [--theme blue|nerv|unit01] [--no-packages] [--no-wallpapers]
+#                [--wallpapers-only]
 #
 # Safe to re-run: every step checks before it acts. Existing files that MAGI would
 # replace are moved to ~/.magi-backup/<timestamp>/ first (uninstall.sh puts them back).
@@ -53,12 +54,13 @@ Options:
   --update          keep the current theme and old backups (used by magi-update)
   --no-packages     skip COPR + dnf (configs only)
   --no-wallpapers   skip the wallpaper downloads
+  --wallpapers-only only generate/download missing wallpapers (the MAGI image runs this at login)
   -h, --help        this help
 Environment: MAGI_DIR (checkout, default ~/.local/share/magi), MAGI_REPO, MAGI_BRANCH
 EOF
 }
 
-DRY=0 UPDATE=0 THEME= DO_PKGS=1 DO_WALLS=1
+DRY=0 UPDATE=0 THEME= DO_PKGS=1 DO_WALLS=1 ONLY_WALLS=0
 ARGS=("$@")
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -68,11 +70,13 @@ while [ $# -gt 0 ]; do
     --theme=*) THEME=${1#--theme=} ;;
     --no-packages) DO_PKGS=0 ;;
     --no-wallpapers) DO_WALLS=0 ;;
+    --wallpapers-only) ONLY_WALLS=1 DO_PKGS=0 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "install.sh: unknown option $1" >&2; usage >&2; exit 2 ;;
   esac
   shift
 done
+[ "$ONLY_WALLS" = 1 ] && [ "$DO_WALLS" = 0 ] && { echo "install.sh: --wallpapers-only and --no-wallpapers conflict" >&2; exit 2; }
 case "${THEME:-blue}" in blue|nerv|unit01) ;; *) echo "install.sh: theme must be blue, nerv or unit01" >&2; exit 2 ;; esac
 
 # ---------------------------------------------------------------- output helpers
@@ -111,12 +115,41 @@ backup() {
   printf '  %s↳%s backed up ~/%s\n' "$Y" "$R" "$rel"
 }
 
+# step 8, also run alone by --wallpapers-only
+wallpapers_step() {
+WD="$HOME/Pictures/wallpapers/eva"
+run mkdir -p "$WD"
+if [ -f "$WD/catppuccin-blue.png" ]; then skip "catppuccin-blue.png exists"
+else
+  run python3 -I "$MAGI_DIR/wallpapers/make-blue.py" "$WD/catppuccin-blue.png" >/dev/null && ok "generated catppuccin-blue.png"
+fi
+if [ "$DO_WALLS" = 0 ]; then skip "--no-wallpapers"
+else
+  got=0 have=0 bad=0 off=0
+  while IFS=$'\t' read -r file sum url page; do
+    case "$file" in ''|\#*) continue ;; esac
+    if [ -f "$WD/$file" ]; then have=$((have + 1)); continue; fi
+    if [ "$DRY" = 1 ]; then printf '  %s[dry-run]%s download %s\n' "$Y" "$R" "$url"; continue; fi
+    if curl -fsSL --retry 2 --connect-timeout 10 -A "magi-installer" -o "$WD/.$file.part" "$url"; then
+      if [ "$(sha256sum "$WD/.$file.part" | cut -d' ' -f1)" = "$sum" ]; then
+        mv "$WD/.$file.part" "$WD/$file"; got=$((got + 1))
+      else rm -f "$WD/.$file.part"; bad=$((bad + 1)); fi
+    else rm -f "$WD/.$file.part"; off=$((off + 1)); fi
+  done < "$MAGI_DIR/wallpapers/manifest.tsv"
+  [ "$have" -gt 0 ] && skip "$have already downloaded"
+  [ "$got" -gt 0 ] && ok "downloaded $got EVA wallpapers (sha256 verified)"
+  [ "$bad" -gt 0 ] && warn "$bad wallpaper(s) failed the checksum and were skipped"
+  [ "$off" -gt 0 ] && warn "$off wallpaper(s) could not be downloaded (offline?); re-run install.sh later. The blue wallpaper is used meanwhile."
+fi
+return 0
+}
+
 # the curl one-liner re-runs install.sh from the fresh checkout: print the banner once
-if [ -z "${MAGI_REEXEC:-}" ]; then
+if [ -z "${MAGI_REEXEC:-}" ] && [ "$ONLY_WALLS" = 0 ]; then
 printf '%s' "$B$C"
 cat <<'EOF'
  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   MAGI SYSTEM · installer      MELCHIOR · BALTHASAR · CASPER
+   MAGI · installer
    Evangelion-themed Hyprland for Fedora
  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 EOF
@@ -162,6 +195,9 @@ else
   MAGI_REEXEC=1 exec "$MAGI_DIR/install.sh" "${ARGS[@]}"
 fi
 PK="$MAGI_DIR/packages"
+if [ "$ONLY_WALLS" = 1 ]; then
+  TOTAL=3; step "Wallpapers"; wallpapers_step; trap - ERR; exit 0
+fi
 
 # ---------------------------------------------------------------- 3. COPR
 step "COPR $COPR (Hyprland 0.57 stack)"
@@ -279,30 +315,7 @@ else warn "tmux-sensible not cloned (offline?); tmux works without it"; fi
 
 # ---------------------------------------------------------------- 8. wallpapers
 step "Wallpapers"
-WD="$HOME/Pictures/wallpapers/eva"
-run mkdir -p "$WD"
-if [ -f "$WD/catppuccin-blue.png" ]; then skip "catppuccin-blue.png exists"
-else
-  run python3 -I "$MAGI_DIR/wallpapers/make-blue.py" "$WD/catppuccin-blue.png" >/dev/null && ok "generated catppuccin-blue.png"
-fi
-if [ "$DO_WALLS" = 0 ]; then skip "--no-wallpapers"
-else
-  got=0 have=0 bad=0 off=0
-  while IFS=$'\t' read -r file sum url page; do
-    case "$file" in ''|\#*) continue ;; esac
-    if [ -f "$WD/$file" ]; then have=$((have + 1)); continue; fi
-    if [ "$DRY" = 1 ]; then printf '  %s[dry-run]%s download %s\n' "$Y" "$R" "$url"; continue; fi
-    if curl -fsSL --retry 2 --connect-timeout 10 -A "magi-installer" -o "$WD/.$file.part" "$url"; then
-      if [ "$(sha256sum "$WD/.$file.part" | cut -d' ' -f1)" = "$sum" ]; then
-        mv "$WD/.$file.part" "$WD/$file"; got=$((got + 1))
-      else rm -f "$WD/.$file.part"; bad=$((bad + 1)); fi
-    else rm -f "$WD/.$file.part"; off=$((off + 1)); fi
-  done < "$MAGI_DIR/wallpapers/manifest.tsv"
-  [ "$have" -gt 0 ] && skip "$have already downloaded"
-  [ "$got" -gt 0 ] && ok "downloaded $got EVA wallpapers (sha256 verified)"
-  [ "$bad" -gt 0 ] && warn "$bad wallpaper(s) failed the checksum and were skipped"
-  [ "$off" -gt 0 ] && warn "$off wallpaper(s) could not be downloaded (offline?); re-run install.sh later. The blue wallpaper is used meanwhile."
-fi
+wallpapers_step
 
 # ---------------------------------------------------------------- 9. desktop settings + theme
 step "Desktop settings and theme"

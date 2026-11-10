@@ -1,0 +1,6 @@
+[Template]
+#EnvironmentFiles=/etc/os-release;
+
+[User]
+Session=magi
+Icon=${HOME}/.face

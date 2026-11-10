@@ -1,0 +1,110 @@
+# MAGI, a Fedora remix: bootable container image (bootc / Fedora Atomic).
+#
+#   podman build -f distro/Containerfile -t localhost/magi:latest .     (from the repo root)
+#
+# Base: Fedora Silverblue 44 (GNOME + GDM stay as a fallback session). On top: the
+# Hyprland 0.57 stack from COPR sdegler/hyprland, every package install.sh lists, the
+# IosevkaTerm Nerd Font, and the MAGI tree in /usr/share/magi. User configs are linked into
+# $HOME at first login by the "MAGI" session (distro/files/usr/libexec/magi-session).
+# Wallpapers are never part of the image: they are downloaded at first login.
+ARG BASE=quay.io/fedora-ostree-desktops/silverblue:44
+
+# The package list lives in install.sh (one list for both install paths). Extract it in a
+# throwaway stage, so editing other parts of install.sh doesn't rebuild the package layer.
+FROM registry.fedoraproject.org/fedora-minimal:44 AS pkglist
+COPY install.sh /install.sh
+RUN sed -n '/^PKGS=(/,/^)/p' /install.sh > /pkgs.sh
+
+FROM ${BASE}
+
+ARG FEDORA=44
+ARG NF_VERSION=v3.5.1
+
+# Remix branding: Fedora's trademark guidelines ask remixes to replace fedora-logos with
+# generic-logos and not to call the result "Fedora".
+RUN set -eux; \
+    rpm -qa | grep -E '^fedora-logos' || true; \
+    dnf -y swap fedora-logos generic-logos; \
+    if rpm -q fedora-logos-httpd >/dev/null 2>&1; then dnf -y swap fedora-logos-httpd generic-logos-httpd; fi; \
+    dnf clean all
+
+# Hyprland stack + everything install.sh installs (one package list, read from install.sh)
+COPY --from=pkglist /pkgs.sh /tmp/magi-pkgs.sh
+RUN set -eux; \
+    curl -fsSL --retry 3 -o /etc/yum.repos.d/_copr-sdegler-hyprland.repo \
+      "https://copr.fedorainfracloud.org/coprs/sdegler/hyprland/repo/fedora-${FEDORA}/sdegler-hyprland-fedora-${FEDORA}.repo"; \
+    . /tmp/magi-pkgs.sh; \
+    dnf -y install "${PKGS[@]}"; \
+    for p in "${PKGS[@]}"; do rpm -q --quiet "$p"; done; \
+    sed -i 's/^enabled=1/enabled=0/' /etc/yum.repos.d/_copr-sdegler-hyprland.repo; \
+    rm /tmp/magi-pkgs.sh; dnf clean all
+
+# IosevkaTerm Nerd Font, system-wide, from the official release (sha256 checked)
+RUN set -eux; d=$(mktemp -d); base="https://github.com/ryanoasis/nerd-fonts/releases/download/${NF_VERSION}"; \
+    curl -fsSL --retry 3 -o "$d/IosevkaTerm.tar.xz" "$base/IosevkaTerm.tar.xz"; \
+    curl -fsSL --retry 3 -o "$d/SHA-256.txt" "$base/SHA-256.txt"; \
+    want=$(awk '$2 ~ /(^|\/)IosevkaTerm\.tar\.xz$/ {print $1}' "$d/SHA-256.txt"); \
+    echo "$want  $d/IosevkaTerm.tar.xz" | sha256sum -c -; \
+    mkdir -p /usr/share/fonts/iosevkaterm-nerd-font; \
+    tar -xJf "$d/IosevkaTerm.tar.xz" -C /usr/share/fonts/iosevkaterm-nerd-font --wildcards '*.ttf' '*.md' 'LICENSE*' 2>/dev/null || \
+      tar -xJf "$d/IosevkaTerm.tar.xz" -C /usr/share/fonts/iosevkaterm-nerd-font; \
+    fc-cache -f /usr/share/fonts/iosevkaterm-nerd-font; rm -rf "$d"
+
+# Session, login-screen default, os-release
+COPY distro/files/ /
+RUN set -eux; \
+    chmod 755 /usr/libexec/magi-session; systemctl set-default graphical.target; \
+    . /usr/lib/os-release; \
+    sed -i -e 's/^NAME=.*/NAME="MAGI"/' \
+           -e "s/^PRETTY_NAME=.*/PRETTY_NAME=\"MAGI ${VERSION_ID} (a Fedora remix)\"/" \
+           -e 's/^VARIANT=.*/VARIANT="MAGI"/' -e 's/^VARIANT_ID=.*/VARIANT_ID=magi/' \
+           -e 's|^HOME_URL=.*|HOME_URL="https://github.com/pankajgarkoti/magi"|' \
+           -e 's|^DOCUMENTATION_URL=.*|DOCUMENTATION_URL="https://github.com/pankajgarkoti/magi#readme"|' \
+           -e 's|^SUPPORT_URL=.*|SUPPORT_URL="https://github.com/pankajgarkoti/magi/issues"|' \
+           -e 's|^BUG_REPORT_URL=.*|BUG_REPORT_URL="https://github.com/pankajgarkoti/magi/issues"|' \
+           -e 's/^LOGO=.*/LOGO=generic-logo-icon/' \
+           -e '/^DEFAULT_HOSTNAME=/d' -e '/^REDHAT_/d' -e '/^SUPPORT_END=/d' \
+           /usr/lib/os-release; \
+    echo 'DEFAULT_HOSTNAME="magi"' >> /usr/lib/os-release; \
+    grep -q '^ID=fedora$' /usr/lib/os-release
+
+# Local voice for the orchestrator (whisper base.en + Piper en_US-ljspeech-medium), so the
+# listener and spoken replies work offline from the first boot. See agent/voice/build.sh.
+COPY agent/voice/build.sh /tmp/voice-build.sh
+RUN set -eux; VOICE_PYTHON=${VOICE_PYTHON:-python3} /tmp/voice-build.sh /usr/lib/magi/voice; rm /tmp/voice-build.sh
+
+# The initramfs carries the boot splash, which came from fedora-logos: rebuild it
+RUN set -eux; kver=$(ls /usr/lib/modules | head -1); mkdir -p /var/roothome; \
+    DRACUT_NO_XATTR=1 dracut --no-hostonly --kver "$kver" --reproducible --add ostree -f "/usr/lib/modules/$kver/initramfs.img"; \
+    chmod 0600 "/usr/lib/modules/$kver/initramfs.img"; rm -rf /var/roothome /var/tmp/*
+
+# The MAGI tree (configs, themes, tools, wallpaper manifest + generator). Last, so config
+# changes rebuild only this layer.
+COPY install.sh uninstall.sh README.md /usr/share/magi/
+COPY packages /usr/share/magi/packages
+COPY wallpapers/manifest.tsv wallpapers/make-blue.py /usr/share/magi/wallpapers/
+COPY agent /usr/share/magi/agent
+ARG MAGI_VERSION=dev
+# Every MAGI tool gets a /usr/bin link, so nothing depends on ~/.local/bin being on PATH at login.
+# MAGI_PATH_FIX is for the login PATH regression test only: full (default) | usrbin | none
+ARG MAGI_PATH_FIX=full
+RUN set -eux; find /usr/share/magi -name __pycache__ -prune -exec rm -rf {} +; \
+    rm -rf /usr/share/magi/agent/voice; \
+    if [ "$MAGI_PATH_FIX" != none ]; then \
+      for f in /usr/share/magi/packages/hypr/.local/bin/* /usr/share/magi/agent/bin/*; do \
+        case "${f##*/}" in *.py|magi-voice-env) continue ;; esac; ln -sf "$f" "/usr/bin/${f##*/}"; done; \
+    fi; \
+    if [ "$MAGI_PATH_FIX" != full ]; then \
+      sed -i 's/^\(\s*\)\(hl.env("PATH".*\)$/\1-- \2/' /usr/share/magi/packages/hypr/.config/hypr/hyprland.lua; \
+      rm -f /usr/share/magi/packages/hypr/.config/environment.d/50-magi-path.conf; \
+    fi; \
+    install -m 644 /usr/share/magi/agent/systemd/* /usr/lib/systemd/user/; \
+    rm -rf /run/dnf /var/log/dnf5.log /var/lib/dnf /var/cache/libdnf5 /var/cache/ldconfig; \
+    echo "${MAGI_VERSION}" > /usr/share/magi/IMAGE_VERSION; \
+    echo "IMAGE_VERSION=\"${MAGI_VERSION}\"" >> /usr/lib/os-release; \
+    bootc container lint
+
+LABEL org.opencontainers.image.title="MAGI" \
+      org.opencontainers.image.description="MAGI, a Fedora remix: Evangelion-themed Hyprland on Fedora Atomic" \
+      org.opencontainers.image.source="https://github.com/pankajgarkoti/magi" \
+      containers.bootc=1

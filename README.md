@@ -1,16 +1,70 @@
 # MAGI
 
-A Hyprland setup for Fedora 44 that installs on a fresh machine with one command.
-It's themed after the MAGI computers from *Neon Genesis Evangelion*: square corners, black
-glass, a hazard stripe here and there, and three colour themes you can flip between.
+MAGI is a Fedora remix where the main interface is an orchestrator agent. You speak or type
+to it. It runs other agents, operates the desktop, and asks you only for decisions. The
+desktop around it is Hyprland, themed after the MAGI computers from *Neon Genesis Evangelion*:
+square corners, black glass, a hazard stripe here and there, three colour themes.
+
+![The orchestrator console dropped down over the desktop, NERV theme](docs/screenshots/agent-console.png)
+
+## The orchestrator
+
+- **One agent in front.** A Claude Code session runs in tmux window 1 (session `magi`) and
+  starts at login. SUPER+` drops its console over the desktop; the console also opens by
+  itself at login. Other agents get their own tmux windows. The orchestrator starts them,
+  checks their work, drives Hyprland through `hyprctl`, and brings you decisions.
+- **Local voice.** A listener transcribes the microphone with faster-whisper (`base.en`) and
+  types the text into the orchestrator as `[voice] …`. Replies are spoken with Piper. Both
+  models are part of the image, so speech works offline and no audio leaves the machine.
+  There is no wake word. SUPER+SHIFT+M mutes it.
+- **Visible state.** The bar module next to the MAGI tag shows the orchestrator
+  (`IDLE`, `WORKING`, `ASKING` when a prompt waits, `OFFLINE`), the number of agents, and the
+  listener. The control centre's AGENTS page lists every agent and has the switches.
+- **Housekeeping.** Agents idle for an hour are closed, with the resume command logged.
+  After a reboot the tmux layout comes back with each session resumed.
+- **Opt-in, and not bundled.** Claude Code is Anthropic's software and is not in the image.
+  On first login, PILOT SETUP runs Anthropic's installer, you sign in with your own account,
+  and you pick a microphone. "Not now" leaves a plain desktop; `magi-agent off` turns it off
+  later. Without network, everything except Claude keeps working.
+
+| | |
+|---|---|
+| ![Control centre, AGENTS page](docs/screenshots/agent-control-centre.png) | ![PILOT SETUP on first login](docs/screenshots/pilot-setup.png) |
+
+The orchestrator text in these screenshots comes from a test stand-in for the `claude`
+command; the VM was not signed in to a Claude account.
+
+## The desktop
 
 ![The MAGI control centre in the NERV theme, open on its THEME page](docs/screenshots/hero-nerv.png)
 
 The control centre (SUPER + SHIFT + Space) in the NERV theme. More screenshots and short clips
 are [below](#a-look-around).
 
-GNOME stays installed. Hyprland is just one more session on the login screen, so if you hate
-it you log out and pick GNOME again.
+GNOME stays installed. MAGI (and plain Hyprland) are extra sessions on the login screen, so
+you can log out and pick GNOME again.
+
+## Get it
+
+**MAGI image (Fedora Atomic, bootc).** A bootable container image with everything above. It is
+installed from an ISO and updated atomically: `sudo bootc upgrade` stages the next image, and
+`sudo bootc rollback` returns to the previous one. No ISO or image is published yet. To build
+both locally (podman only, no root):
+
+```bash
+podman build -f distro/Containerfile -t localhost/magi:latest .
+distro/build-iso.sh --image localhost/magi:latest --out magi-44-x86_64.iso
+```
+
+The ISO is Fedora's netinstall boot media plus the MAGI image (installed offline from the ISO)
+and a kickstart. Anaconda asks for the disk; GNOME Initial Setup creates the user. The login
+screen defaults to the MAGI session. See [`distro/`](distro) and the VM test in
+[`tests/vm/`](tests/vm).
+
+**On an existing Fedora 44 Workstation:** `install.sh` below sets up the same desktop, with
+backups and an uninstall script. The orchestrator layer is a separate opt-in step:
+`agent/setup.sh` (links the tools and units, builds the local voice runtime in
+`~/.local/share/magi-voice`).
 
 ## What's in it
 
@@ -26,8 +80,8 @@ it you log out and pick GNOME again.
   `unit01` (purple and green). Switching one restyles the bar, terminal, tmux, GTK and
   libadwaita apps, icons, the polkit prompt and the lock screen, live.
 - Alacritty, tmux with a recoloured Dracula status bar, ranger, Nautilus, and the IosevkaTerm
-  Nerd Font everywhere. New terminals print a little MAGI vote banner (memory, network,
-  battery). `MAGI_NO_BANNER=1` turns it off.
+  Nerd Font everywhere. New terminals print a short MAGI status banner (orchestrator,
+  memory, network, power). `MAGI_NO_BANNER=1` turns it off.
 
 ## A look around
 
@@ -143,7 +197,8 @@ SUPER does window management. Alt is left alone because tmux uses it.
 | SUPER + CTRL + h j k l | Resize window |
 | SUPER + 1…9 / SUPER + SHIFT + 1…9 | Go to workspace / send window to workspace |
 | SUPER + Tab, or tap SUPER twice | Previous workspace |
-| SUPER + ` | MAGI scratchpad terminal (drop-down tmux) |
+| SUPER + ` | Orchestrator console (drop-down tmux session `magi`) |
+| SUPER + SHIFT + M | Mute / unmute the listener |
 | SUPER + SHIFT + ` | Send window to the scratchpad |
 | SUPER + A | **Window mode**: plain h j k l focus, H J K L move, arrows resize, 1–9, f, v, q; Esc leaves |
 | SUPER + W | Next wallpaper |
@@ -155,7 +210,7 @@ SUPER does window management. Alt is left alone because tmux uses it.
 | SUPER + drag / SUPER + right-drag | Move / resize a window with the mouse |
 | Volume, brightness, media keys | Work as labelled |
 
-Inside the control centre: arrows or `j k` move, `h l` adjust, Enter acts, `1`–`7` jump to a
+Inside the control centre: arrows or `j k` move, `h l` adjust, Enter acts, `1`–`8` jump to a
 section, Esc goes back. In the overview, type to filter, Enter jumps, Shift+Enter brings the
 window here. The waybar **MAGI** badge opens the control centre (right-click cycles the theme).
 
@@ -195,6 +250,9 @@ Then pick GNOME again on the login screen.
 
 ```
 install.sh  uninstall.sh
+agent/             the orchestrator layer: magi-agent, PILOT SETUP, listener, hud-say, tmux
+                   snapshot/restore/reaper, user units, ORCHESTRATOR.md, voice runtime build
+distro/            Containerfile (bootc image), build-iso.sh, installer kickstart + branding
 packages/          stow packages, linked into ~ file by file
   hypr/            Hyprland, waybar, mako, wofi, themes, the magi/eva-* tools (~/.local/bin)
   gtk/             EVA GTK 3/4 theme sources, libadwaita colours, generators
@@ -213,3 +271,10 @@ tests/             container-test.sh (podman, Fedora 44) and the VM test notes
   plus [tpm](https://github.com/tmux-plugins/tpm) (MIT), both vendored under `packages/tmux`.
 - Hyprland packages for Fedora: COPR [sdegler/hyprland](https://copr.fedorainfracloud.org/coprs/sdegler/hyprland/).
 - Font: [IosevkaTerm Nerd Font](https://github.com/ryanoasis/nerd-fonts).
+- MAGI is a Fedora remix: it is built from Fedora packages, but it is not Fedora and is not
+  produced or endorsed by the Fedora Project. Fedora's logos are replaced by `generic-logos`.
+- Voice: [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (MIT) with the
+  `base.en` model, and [Piper](https://github.com/OHF-Voice/piper1-gpl) (GPL-3.0-or-later) with
+  the `en_US-ljspeech-medium` voice (LJ Speech dataset, public domain).
+- The orchestrator uses [Claude Code](https://code.claude.com), which MAGI does not include or
+  redistribute; it is installed from Anthropic and used under Anthropic's terms.

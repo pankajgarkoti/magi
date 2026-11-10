@@ -8,7 +8,15 @@ self=$(readlink -f "${BASH_SOURCE[0]}")
 repo=${MAGI_DIR:-$(cd "$(dirname "$self")/../../../.." && pwd)}
 [ -x "$repo/install.sh" ] || repo=$HOME/.local/share/magi
 [ -x "$repo/install.sh" ] || { echo "magi-update: MAGI checkout not found (set MAGI_DIR)" >&2; exit 1; }
+# MAGI image (bootc): packages and /usr/share/magi come with the system image
+if [ -e /run/ostree-booted ] && [ "$repo" = /usr/share/magi ]; then
+  echo "==> MAGI image $(cat "$repo/IMAGE_VERSION" 2>/dev/null)"
+  echo "    System and MAGI updates: sudo bootc upgrade, then reboot (sudo bootc rollback undoes it)."
+  echo "    Re-linking your configs from the current image:"
+  set -- --no-packages "$@"
+else
 echo "==> MAGI checkout: $repo"
+fi
 dry=; for a in "$@"; do [ "$a" = --dry-run ] && dry=1; done
 if [ -d "$repo/.git" ] && ! git -C "$repo" rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
   echo "==> no upstream branch configured; skipping git pull"
