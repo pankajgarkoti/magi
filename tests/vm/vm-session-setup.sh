@@ -33,7 +33,7 @@ sudo mkdir -p /etc/hostapd
 sudo tee /etc/hostapd/magi-wlan0.conf >/dev/null <<'EOF'
 interface=wlan0
 driver=nl80211
-ssid=NERV-HQ
+ssid=Home-5G
 hw_mode=g
 channel=6
 wpa=2
@@ -44,7 +44,7 @@ EOF
 sudo tee /etc/hostapd/magi-wlan1.conf >/dev/null <<'EOF'
 interface=wlan1
 driver=nl80211
-ssid=GEOFRONT-GUEST
+ssid=Cafe-Guest
 hw_mode=g
 channel=11
 EOF

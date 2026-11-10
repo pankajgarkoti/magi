@@ -27,7 +27,7 @@ jget() { status | python3 -c "import json,sys; print(json.load(sys.stdin)['$1'])
 
 voice_loop() {
   local sentence="Open the control centre and switch to the red theme."
-  n0=$(grep -c "received: \[voice\]" "$LOG" 2>/dev/null || echo 0)
+  n0=$(grep -c "received: \[voice\]" "$LOG" 2>/dev/null); n0=${n0:-0}
   paplay --device=magi_test "$T/say.wav" 2>/dev/null || {
     "$VOICE_PY" -m piper --model /usr/lib/magi/voice/voices/en_US-ljspeech-medium.onnx --output_file "$T/say.wav" <<< "$sentence" >/dev/null 2>&1
     sleep 1; paplay --device=magi_test "$T/say.wav"; }
