@@ -31,8 +31,11 @@ square corners, black glass, a hazard stripe here and there, three colour themes
 |---|---|
 | ![Control centre, AGENTS page](docs/screenshots/agent-control-centre.png) | ![PILOT SETUP on first login](docs/screenshots/pilot-setup.png) |
 
+![Bar module: orchestrator state, agents, listener](docs/screenshots/agent-bar.png)
+
 The orchestrator text in these screenshots comes from a test stand-in for the `claude`
-command; the VM was not signed in to a Claude account.
+command; the VM was not signed in to a Claude account. They were captured at 2× in the MAGI
+distro test VM, installed from the ISO.
 
 ## The desktop
 
@@ -98,7 +101,8 @@ The three themes on the same page: `nerv`, `unit01`, `blue`.
 
 ![The control centre THEME page in the nerv, unit01 and blue themes, stacked](docs/screenshots/themes.png)
 
-Opening the control centre, then jumping to NETWORK, BLUETOOTH and SOUND with `1`, `2`, `3`.
+Opening the control centre, then jumping to NETWORK, BLUETOOTH and SOUND. (Recorded before
+the AGENTS page became section 1; those sections are now `2`, `3`, `4`.)
 ([MP4](docs/clips/control-centre.mp4))
 
 https://github.com/user-attachments/assets/a23c4f63-8490-48f2-acb0-4f0d3b44d156
