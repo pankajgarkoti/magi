@@ -28,10 +28,11 @@ def tmux(*args, check=False):
     return r.stdout if r.returncode == 0 else None
 
 
-def pane_cmd(p):
+def pane_cmd(p, session=None, window=None):
     q = lambda argv: " ".join(shlex.quote(c) for c in argv)
     if p["kind"] == "claude":  # snapshots from before the adapter layer
-        p = dict(p, kind="agent", agent="claude")
+        orch = session == magi_agents.SESSION and window == "orchestrator"
+        p = dict(p, kind="orchestrator" if orch else "agent", agent="claude")
     if p["kind"] == "orchestrator":
         # resume only when the orchestrator still uses the same agent; otherwise start the new one
         same = p.get("agent") == magi_agents.get().name and magi_agents.get().resumable
@@ -81,7 +82,7 @@ def main(argv):
         if tgt and name in (existing(tgt) or set()):
             continue
         first = panes[0]
-        cmd = pane_cmd(first)
+        cmd = pane_cmd(first, session, name)
         log.append(f"{session}:{name} <- {cmd or 'shell'} in {first['cwd']}")
         if dry:
             continue
@@ -92,7 +93,7 @@ def main(argv):
         else:
             tmux("new-window", "-d", "-t", f"={tgt}:", "-n", name, "-c", first["cwd"], *extra, check=True)
         for p in panes[1:]:
-            c = pane_cmd(p)
+            c = pane_cmd(p, session, name)
             tmux("split-window", "-d", "-t", f"={tgt}:={name}", "-c", p["cwd"], *([c] if c else []))
             log.append(f"  + pane <- {c or 'shell'} in {p['cwd']}")
         if len(panes) > 1:

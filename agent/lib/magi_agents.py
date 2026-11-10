@@ -179,7 +179,7 @@ class Agent:
     process = ()           # process names (comm, argv[0] or a node script's argv[1] basename)
     binary = None
     install_cmd = None     # shell command: the agent's official installer
-    install_note = ""
+    install_note = ""      # where the installer puts the binary
     install_shown = ""     # the official command as its docs show it
     licence = ""
     needs_network = True
@@ -255,7 +255,7 @@ class Claude(Agent):
     name, label, process, binary = "claude", "Claude Code", ("claude",), "claude"
     install_cmd = "curl -fsSL ${MAGI_CLAUDE_INSTALL_URL:-https://claude.ai/install.sh} | bash"
     install_shown = "curl -fsSL https://claude.ai/install.sh | bash"
-    install_note = "Anthropic's official installer, into ~/.local/bin"
+    install_note = "~/.local/bin"
     licence = "https://code.claude.com/docs/en/legal-and-compliance"
     state_source = "~/.claude/sessions/<pid>.json"
     ask_re = r"Enter to select|Do you want|Allow this|Esc to cancel|\[y/N\]|\(y/n\)"
@@ -313,7 +313,7 @@ class OpenCode(Agent):
     name, label, process, binary = "opencode", "opencode", ("opencode",), "opencode"
     install_cmd = "curl -fsSL ${MAGI_OPENCODE_INSTALL_URL:-https://opencode.ai/install} | bash -s -- --no-modify-path"
     install_shown = "curl -fsSL https://opencode.ai/install | bash"
-    install_note = "opencode's official installer, into ~/.opencode/bin"
+    install_note = "~/.opencode/bin"
     licence = "https://github.com/anomalyco/opencode (MIT)"
     state_source = "opencode server API (active sessions, permission requests)"
     has_signin = False   # free models work without an account; providers are added with /connect
@@ -380,7 +380,7 @@ class Codex(Agent):
     name, label, process, binary = "codex", "Codex", ("codex",), "codex"
     install_cmd = "curl -fsSL ${MAGI_CODEX_INSTALL_URL:-https://chatgpt.com/codex/install.sh} | CODEX_NON_INTERACTIVE=1 sh"
     install_shown = "curl -fsSL https://chatgpt.com/codex/install.sh | sh"
-    install_note = "OpenAI's official installer, into ~/.local/bin"
+    install_note = "~/.local/bin"
     licence = "https://github.com/openai/codex (Apache-2.0)"
     state_source = "Codex rollout file (task_started / task_complete) + tmux pane for approvals"
     busy_re = r"esc to interrupt"

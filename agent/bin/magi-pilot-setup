@@ -311,8 +311,9 @@ class Pilot(Gtk.ApplicationWindow):
                                     "holds MAGI's orchestrator instructions ($MAGI_INSTRUCTIONS has the path). "
                                     "It can't be resumed after a reboot; it starts fresh.")
         else:
-            self.inst_note.set_text("MAGI does not include %s. INSTALL runs %s, for your user:\n%s\n%s" % (
-                info.get("label"), info.get("install_note"), info.get("install_shown"), info.get("licence", "")))
+            self.inst_note.set_text("MAGI does not include %s. INSTALL runs its official installer for your user, "
+                                    "into %s:\n%s\n%s" % (info.get("label"), info.get("install_note"),
+                                                          info.get("install_shown"), info.get("licence", "")))
         self.inst_btn.set_sensitive(not path and key != "custom")
         self.next_btn.set_sensitive(bool(path))
         if path:
@@ -392,7 +393,7 @@ class Pilot(Gtk.ApplicationWindow):
                 self.auth_state.set_text("%s not installed (step 2)" % self.info.get("label"))
                 return True
         if not self.info.get("has_signin"):
-            self.auth_state.set_text("no sign-in needed by MAGI")
+            self.auth_state.set_text("not needed" + (" · /connect in opencode adds one" if self.info.get("name") == "opencode" else ""))
             self.next_btn.set_sensitive(True)
             self.next_btn.add_css_class("primary")
             return False
