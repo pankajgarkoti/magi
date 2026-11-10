@@ -105,6 +105,6 @@ RUN set -eux; find /usr/share/magi -name __pycache__ -prune -exec rm -rf {} +; \
     bootc container lint
 
 LABEL org.opencontainers.image.title="MAGI" \
-      org.opencontainers.image.description="MAGI, a Fedora remix: Evangelion-themed Hyprland on Fedora Atomic" \
+      org.opencontainers.image.description="MAGI, a Fedora remix: Hyprland on Fedora Atomic with an orchestrator agent as the main interface" \
       org.opencontainers.image.source="https://github.com/pankajgarkoti/magi" \
       containers.bootc=1

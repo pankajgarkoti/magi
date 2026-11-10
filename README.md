@@ -2,8 +2,8 @@
 
 MAGI is a Fedora remix where the main interface is an orchestrator agent. You speak or type
 to it. It runs other agents, operates the desktop, and asks you only for decisions. The
-desktop around it is Hyprland, themed after the MAGI computers from *Neon Genesis Evangelion*:
-square corners, black glass, a hazard stripe here and there, three colour themes.
+desktop around it is Hyprland: square corners, black glass, a hazard stripe here and there,
+three colour themes.
 
 ![The orchestrator console dropped down over the desktop, NERV theme](docs/screenshots/agent-console.png)
 
