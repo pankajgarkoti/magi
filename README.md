@@ -4,22 +4,10 @@ A Hyprland setup for Fedora 44 that installs on a fresh machine with one command
 It's themed after the MAGI computers from *Neon Genesis Evangelion*: square corners, black
 glass, a hazard stripe here and there, and three colour themes you can flip between.
 
-![MAGI, NERV theme: control centre theme page over an EVA wallpaper, translucent terminal](docs/screenshots/theme-nerv.png)
+![The MAGI control centre in the NERV theme, open on its THEME page](docs/screenshots/hero-nerv.png)
 
-23 seconds of it: NERV → Unit-01 → blue, the control centre, the overview, then the Wi-Fi and
-Bluetooth pickers ([MP4](docs/magi-demo.mp4)). Each theme switch takes about 5 s in the VM; those
-waits are cut.
-
-![MAGI demo](docs/magi-demo.gif)
-
-The screenshots and the demo came from a throwaway Fedora 44 Workstation VM, right after running
-the installer. The Wi-Fi networks and the Bluetooth device in them are simulated inside that VM.
-
-| | |
-|---|---|
-| ![EVA Unit-01 theme](docs/screenshots/theme-unit01.png) | ![MAGI control centre](docs/screenshots/magi-control-centre.png) |
-| ![Overview](docs/screenshots/overview.png) | ![Wi-Fi picker](docs/screenshots/wifi-picker.png) |
-| ![Bluetooth picker](docs/screenshots/bluetooth-picker.png) | ![Desktop, blue theme](docs/screenshots/desktop-blue.png) |
+The control centre (SUPER + SHIFT + Space) in the NERV theme. More screenshots and short clips
+are [below](#a-look-around).
 
 GNOME stays installed. Hyprland is just one more session on the login screen, so if you hate
 it you log out and pick GNOME again.
@@ -40,6 +28,51 @@ it you log out and pick GNOME again.
 - Alacritty, tmux with a recoloured Dracula status bar, ranger, Nautilus, and the IosevkaTerm
   Nerd Font everywhere. New terminals print a little MAGI vote banner (memory, network,
   battery). `MAGI_NO_BANNER=1` turns it off.
+
+## A look around
+
+Everything here was captured in a throwaway Fedora 44 Workstation VM right after running the
+installer, at 2× scale, and cropped to one thing per image. The Wi-Fi networks and Bluetooth
+devices are simulated inside the VM.
+
+Switching from NERV to Unit-01 on the control centre's THEME page. The few seconds the VM takes
+to apply a theme are cut. ([MP4](docs/clips/theme-switch.mp4))
+
+![Theme switch from NERV to Unit-01 in the control centre](docs/clips/theme-switch.gif)
+
+The three themes on the same page: `nerv`, `unit01`, `blue`.
+
+![The control centre THEME page in the nerv, unit01 and blue themes, stacked](docs/screenshots/themes.png)
+
+Opening the control centre, then jumping to NETWORK, BLUETOOTH and SOUND with `1`, `2`, `3`.
+([MP4](docs/clips/control-centre.mp4))
+
+![Opening the control centre and moving between sections](docs/clips/control-centre.gif)
+
+The NETWORK page: link details, then shortcuts to the Wi-Fi picker, the connection editor and
+GNOME's network settings.
+
+![Control centre NETWORK page](docs/screenshots/control-centre-network.png)
+
+`magi-overview` (SUPER + O): every window as a live thumbnail, grouped by workspace.
+
+![magi-overview with live window thumbnails](docs/screenshots/overview.png)
+
+Typing `naut` filters to the Files window on workspace 2; Enter jumps there.
+([MP4](docs/clips/overview.mp4))
+
+![Filtering the overview and jumping to a window](docs/clips/overview.gif)
+
+`eva-wifi` (SUPER + SHIFT + W): the current link and the networks in range, driven with `j`/`k`.
+([MP4](docs/clips/wifi-picker.mp4))
+
+![eva-wifi picker](docs/screenshots/wifi-picker.png)
+
+![Opening eva-wifi and moving through the networks](docs/clips/wifi-picker.gif)
+
+`eva-bluetooth` (SUPER + SHIFT + B) during a scan: one paired speaker, one keyboard in range.
+
+![eva-bluetooth picker during a scan](docs/screenshots/bluetooth-picker.png)
 
 ## Install
 
