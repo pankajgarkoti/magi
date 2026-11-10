@@ -1,6 +1,6 @@
 # MAGI
 
-My Hyprland setup for Fedora 44, packaged so it installs on a fresh machine with one command.
+A Hyprland setup for Fedora 44 that installs on a fresh machine with one command.
 It's themed after the MAGI computers from *Neon Genesis Evangelion*: square corners, black
 glass, a hazard stripe here and there, and three colour themes you can flip between.
 
@@ -24,17 +24,12 @@ the installer. The Wi-Fi networks and the Bluetooth device in them are simulated
 GNOME stays installed. Hyprland is just one more session on the login screen, so if you hate
 it you log out and pick GNOME again.
 
-## How this was made
-
-Built by talking to a Claude Code session that ran a handful of agents in tmux:
-[github.com/pankajgarkoti/bridge](https://github.com/pankajgarkoti/bridge).
-
 ## What's in it
 
 - Hyprland 0.57 with the new Lua config, from the `sdegler/hyprland` COPR. Also hyprlock,
   hypridle, hyprpaper, hyprsunset and hyprpolkitagent.
 - waybar, mako for notifications, wofi as the launcher, cliphist for clipboard history.
-- `magi`, a control centre I use instead of GNOME's quick settings: network, Bluetooth,
+- `magi`, a control centre that replaces GNOME's quick settings: network, Bluetooth,
   sound devices and volume, brightness and night light, power profiles, lock/suspend/reboot
   (each one asks twice), themes and wallpapers. It stays resident, so it opens in under 100 ms.
 - `magi-overview`: all windows on all workspaces as live thumbnails. Type to filter, Enter jumps.
