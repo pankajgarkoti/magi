@@ -88,7 +88,7 @@ tmux-snapshot
 L=$HOME/.local/state/tmux-snapshot/layout.json
 osid=$(python3 -c "import json; d=json.load(open('$L')); print([p.get('session_id') for w in d['windows'] for p in w['panes'] if p.get('kind')=='orchestrator'][0])")
 ssid=$(python3 -c "import json; d=json.load(open('$L')); print([p.get('session_id') for w in d['windows'] for p in w['panes'] if w['name']=='sub1'][0])")
-[[ $osid == ses_magi* && $ssid == ses_magi* ]] && pass "snapshot has both MAGI-minted session ids ($osid, $ssid)" || fail "snapshot ids: $osid $ssid"
+[[ $osid == ses_* && $ssid == ses_* ]] && pass "snapshot has both session ids ($osid, $ssid)" || fail "snapshot ids: $osid $ssid"
 tmux kill-server; rm -f "$XDG_RUNTIME_DIR/tmux-restored"; sleep 1
 magi-agent start
 check "restore: orchestrator back with opencode --session $osid" waitfor 20 bash -c "pgrep -af 'opencode --session $osid' | grep -v pgrep"

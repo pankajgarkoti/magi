@@ -4,7 +4,8 @@ an account. Never part of the image. It mimics the interface MAGI relies on, per
 
   installed as     claude            opencode                   codex             anything else
   sign-in          auth status/login (none needed)              login status/login  (none)
-  resume           --resume ID       --session ID               resume ID         (starts fresh)
+  resume           --resume ID       --session ID (fresh: id    resume ID         (starts fresh)
+                                     in opencode.db)
   own state        ~/.claude/        server API (service.json,  thread row in     -
                    sessions/<pid>    /api/session, permissions) ~/.codex/state_5 +
                                                                 rollout events
@@ -145,6 +146,15 @@ pane = os.environ.get("TMUX_PANE", "")
 SF = os.path.join(HOME, ".claude/sessions", f"{os.getpid()}.json")
 if KIND == "opencode":
     oc_service(); os.makedirs(OC_DIR, exist_ok=True)
+    if "--session" not in a:
+        # like opencode 1.19: a fresh start makes its own session id, stored in opencode.db
+        dd = os.path.join(os.environ.get("XDG_DATA_HOME", os.path.join(HOME, ".local/share")), "opencode")
+        os.makedirs(dd, exist_ok=True)
+        con = sqlite3.connect(os.path.join(dd, "opencode.db"))
+        con.execute("create table if not exists session (id text primary key, directory text not null, "
+                    "parent_id text, time_created integer not null)")
+        con.execute("insert into session values (?,?,null,?)", (sid, os.path.realpath(os.getcwd()), int(time.time() * 1000)))
+        con.commit(); con.close()
 if KIND == "codex":
     ch = os.environ.get("CODEX_HOME", os.path.join(HOME, ".codex")); os.makedirs(ch, exist_ok=True)
     con = sqlite3.connect(os.path.join(ch, "state_5.sqlite"))
