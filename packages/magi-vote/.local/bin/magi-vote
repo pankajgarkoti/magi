@@ -1,0 +1,93 @@
+#!/usr/bin/env -S python3 -IS
+"""magi-vote: three reviewers vote before an agent does something it can't undo.
+
+  magi-vote on | off | status      register the hook and turn voting on, or off
+  magi-vote --help                 everything else
+
+This file is the hook's fast path. A tool call with none of the words below in it (ls,
+git status, npm test, an Edit) exits here, before the classifier is even loaded; the
+list is a superset of what the rules in magi_vote.py look at, which
+tests/magi-vote/test_classifier.py checks.
+"""
+import os
+import sys
+import time
+
+T0 = time.monotonic()
+
+WORDS = frozenset("""
+push reset clean checkout restore branch stash rebase commit filter-branch filter-repo reflog gc update-ref
+send-email lfs worktree
+rm unlink srm trash-empty shred wipe wipefs mkfs blkdiscard sgdisk parted fdisk sfdisk cryptsetup dd find delete
+exec execdir ok truncate rsync remove chmod crontab
+curl wget http https xh httpie curlie
+mail mailx sendmail mutt neomutt msmtp ssmtp swaks s-nail telegram-send slack slack-cli signal-cli twurl toot
+wacli ntfy apprise pushover matrix-commander
+gh glab tea hub npm pnpm yarn bun cargo twine gem poetry uv hatch flit docker podman buildah skopeo vercel netlify
+fly flyctl heroku wrangler firebase helm terraform tofu pulumi ansible-playbook kubectl mvn gradle dotnet
+aws gcloud gsutil az doctl s3cmd rclone b2 mc oci linode-cli hcloud
+psql mysql mariadb sqlite3 mongosh mongo redis-cli sqlcmd clickhouse-client cockroach pgcli mycli litecli duckdb
+supabase neonctl turso planetscale pscale
+stripe dnf dnf5 yum microdnf apt apt-get aptitude pacman zypper rpm-ostree flatpak snap brew rpm pip pip3
+systemctl loginctl shutdown reboot poweroff halt init telinit
+make just task mage rake invoke nox tox
+python python3 node deno ruby perl php
+userdel groupdel deluser passwd usermod chown chattr setenforce firewall-cmd iptables nft ufw
+sudo doas run0 pkexec eval
+deploy release publish ship rollout migrate teardown destroy nuke cleanup purge notify post upload prod production
+clean-all distclean rmtree rmsync unlinksync smtplib requests httpx fetch method
+drop insert update alter create grant revoke flushall flushdb
+""".split())
+
+
+_SEP = str.maketrans({c: " " for c in "\\/\"'`$(){}[]<>|&;:=,!?*~#@%^+\t\n\r"})
+
+
+def _words(text):
+    """Lower-case words of text, also split at . and _ (deploy.sh -> deploy, sh)."""
+    t = text.lower().replace("\\n", " ").replace("\\t", " ").replace("\\r", " ").translate(_SEP)
+    w = set(t.split())
+    return w | set(t.replace(".", " ").replace("_", " ").split())
+
+
+def candidate(tool, tool_input):
+    """False when the call certainly passes; True when the full classifier should look."""
+    if tool == "Bash":
+        return raw_candidate((tool_input or {}).get("command", ""))
+    return tool.startswith("mcp__")
+
+
+def raw_candidate(text):
+    """The same test on any text: the hook runs it on the raw stdin JSON, so the fast
+    path never imports json (whose decoder pulls in re). Words from the JSON keys and
+    paths only cost a trip through the full classifier, never a missed vote."""
+    if '"mcp__' in text:
+        return True
+    w = _words(text)
+    return bool(w & WORDS) or ("mv" in w and "null" in w)
+
+
+def main():
+    argv = sys.argv[1:]
+    if argv[:1] == ["hook"]:
+        if os.environ.get("MAGI_VOTE_INSIDE") == "1":
+            sys.exit(0)
+        raw = sys.stdin.read()
+        if '"tool_name":"Bash"' not in raw.replace(" ", "") and '"mcp__' not in raw:
+            sys.exit(0)
+        if not raw_candidate(raw):
+            sys.exit(0)
+        import json
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            sys.exit(0)
+    else:
+        data = None
+    sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+    import magi_vote_cli
+    magi_vote_cli.run(argv, T0, data)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,442 @@
+#!/usr/bin/env python3
+"""magi-vote-overlay: the MAGI vote on screen.
+
+Reads JSON lines on stdin from `magi-vote` (start, then a vote from each unit as it
+lands, then the verdict), draws the three units the way the show does, holds the verdict
+for --hold seconds and exits. It never takes the keyboard. Colours come from
+~/.config/hypr/themes/current/colors.css and follow `eva-theme` live.
+
+  {"type":"start","text":"git push --force origin main","labels":["git push --force"],"quorum":2}
+  {"type":"vote","index":1,"vote":"deny","reason":"..."}
+  {"type":"verdict","verdict":"deny","approvals":2,"quorum":2,"latency":4.1}
+
+Testing: --screenshot FILE renders the final frame to a PNG with no window at all;
+EVA_LAYER_MONITOR=NAME pins the overlay to an output.
+"""
+import json
+import math
+import os
+import re
+import sys
+import threading
+import time
+
+sys.dont_write_bytecode = True
+HERE = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, HERE)
+# eva_layer ships with the hypr package; from a checkout it sits in the sibling package
+sys.path.append(os.path.join(HERE, "..", "..", "..", "hypr", ".local", "bin"))
+try:
+    import eva_layer
+    eva_layer.preload()
+except ImportError:
+    eva_layer = None
+
+import gi  # noqa: E402
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
+gi.require_version("PangoCairo", "1.0")
+from gi.repository import Gdk, GLib, Gtk, Pango, PangoCairo  # noqa: E402
+
+THEMES = os.path.expanduser("~/.config/hypr/themes")
+COLORS = THEMES + "/current/colors.css"
+FALLBACK = {"base": "#0b0b0f", "surface0": "#1c1c24", "surface1": "#2a2a33", "text": "#e6e6ea", "dim": "#8a8a99",
+            "accent": "#e5322d", "accent2": "#ff8c1a", "good": "#9be564", "warn": "#ff8c1a", "bad": "#e5322d"}
+MONO = "IosevkaTerm Nerd Font Mono"
+CJK = "Noto Serif CJK JP, Noto Sans CJK JP, Noto Sans CJK SC, sans-serif"
+UNITS = [("MELCHIOR", "1", "SCIENTIST"), ("BALTHASAR", "2", "MOTHER"), ("CASPER", "3", "WOMAN")]
+W, H = 960, 660
+
+
+def load_colors(path=COLORS):
+    cols = dict(FALLBACK)
+    try:
+        with open(path) as f:
+            for m in re.finditer(r"@define-color\s+([\w-]+)\s+(#[0-9a-fA-F]{6})", f.read()):
+                cols[m.group(1)] = m.group(2)
+    except OSError:
+        pass
+    return {k: tuple(int(v[i:i + 2], 16) / 255 for i in (1, 3, 5)) for k, v in cols.items()}
+
+
+def theme_key():
+    try:
+        return os.path.realpath(COLORS) + str(os.stat(COLORS).st_mtime)
+    except OSError:
+        return ""
+
+
+class State:
+    def __init__(self):
+        self.text = ""
+        self.labels = []
+        self.votes = [None, None, None]
+        self.landed = [0.0, 0.0, 0.0]
+        self.verdict = None
+        self.verdict_at = 0.0
+        self.quorum = 2
+        self.bypass = False
+        self.t0 = time.monotonic()
+
+    def apply(self, ev):
+        t = ev.get("type")
+        if t == "start":
+            self.text = ev.get("text", "")
+            self.labels = ev.get("labels") or []
+            self.quorum = ev.get("quorum", 2)
+            self.bypass = bool(ev.get("bypass"))
+        elif t == "vote":
+            i = int(ev["index"])
+            self.votes[i] = {"vote": ev["vote"], "reason": ev.get("reason", "")}
+            self.landed[i] = time.monotonic()
+        elif t == "verdict":
+            self.verdict = ev
+            self.verdict_at = time.monotonic()
+
+
+# ------------------------------------------------------------------ drawing
+
+def rgba(cr, c, a=1.0):
+    cr.set_source_rgba(c[0], c[1], c[2], a)
+
+
+def poly(cr, pts):
+    cr.move_to(*pts[0])
+    for p in pts[1:]:
+        cr.line_to(*p)
+    cr.close_path()
+
+
+def text(cr, s, x, y, size, color, family=MONO, weight=Pango.Weight.BOLD, width=None, align="left",
+         spacing=0, alpha=1.0, wrap_lines=None, anchor="top"):
+    lay = PangoCairo.create_layout(cr)
+    fd = Pango.FontDescription.from_string(family)
+    fd.set_absolute_size(size * Pango.SCALE)
+    fd.set_weight(weight)
+    lay.set_font_description(fd)
+    if spacing:
+        attrs = Pango.AttrList()
+        attrs.insert(Pango.attr_letter_spacing_new(int(spacing * Pango.SCALE)))
+        lay.set_attributes(attrs)
+    if width:
+        lay.set_width(int(width * Pango.SCALE))
+        lay.set_wrap(Pango.WrapMode.WORD_CHAR)
+        lay.set_alignment({"left": Pango.Alignment.LEFT, "center": Pango.Alignment.CENTER,
+                           "right": Pango.Alignment.RIGHT}[align])
+        if wrap_lines:
+            lay.set_height(-wrap_lines)
+            lay.set_ellipsize(Pango.EllipsizeMode.END)
+    else:
+        lay.set_ellipsize(Pango.EllipsizeMode.NONE)
+    lay.set_text(s, -1)
+    _, log = lay.get_pixel_extents()
+    if not width and align != "left":
+        x = x - log.width / 2 if align == "center" else x - log.width
+    if anchor == "middle":
+        y -= log.height / 2
+    elif anchor == "bottom":
+        y -= log.height
+    rgba(cr, color, alpha)
+    cr.move_to(x, y)
+    PangoCairo.show_layout(cr, lay)
+    return log.width, log.height
+
+
+def hazard(cr, x, y, w, h, color, alpha=0.55):
+    cr.save()
+    cr.rectangle(x, y, w, h)
+    cr.clip()
+    rgba(cr, color, alpha)
+    step = 12
+    i = -h
+    while i < w + h:
+        poly(cr, [(x + i, y + h), (x + i + 6, y + h), (x + i + 6 + h, y), (x + i + h, y)])
+        cr.fill()
+        i += step
+    cr.restore()
+
+
+def unit_shapes(x, y, w, h):
+    """The three panels, laid out like the show: BALTHASAR on top, CASPER bottom left,
+    MELCHIOR bottom right, each cut at the corner that faces the centre."""
+    gap = 18
+    cut = 44
+    tw = w * 0.46
+    th = h * 0.47
+    tx = x + (w - tw) / 2
+    top = [(tx, y), (tx + tw, y), (tx + tw, y + th - cut), (tx + tw - cut, y + th), (tx + cut, y + th), (tx, y + th - cut)]
+    by = y + th + gap
+    bh = h - th - gap
+    bw = w * 0.395
+    lx = x
+    rx = x + w - bw
+    left = [(lx, by), (lx + bw - cut, by), (lx + bw, by + cut), (lx + bw, by + bh), (lx, by + bh)]
+    right = [(rx + cut, by), (rx + bw, by), (rx + bw, by + bh), (rx, by + bh), (rx, by + cut)]
+    boxes = {1: (tx, y, tw, th), 2: (lx, by, bw, bh), 0: (rx, by, bw, bh)}
+    return {1: top, 2: left, 0: right}, boxes
+
+
+def draw(cr, width, height, st, C, now=None):
+    now = time.monotonic() if now is None else now
+    cr.set_operator(0)  # CLEAR
+    cr.paint()
+    cr.set_operator(2)  # OVER
+    # frame
+    rgba(cr, C["base"], 0.95)
+    cr.rectangle(0, 0, width, height)
+    cr.fill()
+    rgba(cr, C["accent"])
+    cr.set_line_width(1.5)
+    cr.rectangle(0.75, 0.75, width - 1.5, height - 1.5)
+    cr.stroke()
+
+    # header strip
+    rgba(cr, C["accent"])
+    cr.rectangle(0, 0, width, 34)
+    cr.fill()
+    text(cr, "MAGI SYSTEM", 16, 17, 14, C["base"], weight=Pango.Weight.HEAVY, spacing=4, anchor="middle")
+    text(cr, "提訴 · PROPOSAL %s" % ("· NO PERMISSION PROMPTS" if st.bypass else ""), width - 16, 17, 11, C["base"],
+         weight=Pango.Weight.HEAVY, spacing=2, align="right", anchor="middle")
+    hazard(cr, 0, 34, width, 6, C["accent"])
+
+    # the proposal: command and what flagged it
+    y = 52
+    first = (st.text or "").strip().splitlines()
+    cmd = first[0] if first else ""
+    if len(first) > 1:
+        cmd += "  …"
+    rgba(cr, C["surface0"], 0.9)
+    cr.rectangle(16, y, width - 32, 44)
+    cr.fill()
+    rgba(cr, C["accent"])
+    cr.rectangle(16, y, 3, 44)
+    cr.fill()
+    text(cr, "$", 28, y + 22, 15, C["accent"], anchor="middle")
+    text(cr, cmd, 46, y + 12, 15, C["text"], weight=Pango.Weight.BOLD, width=width - 80, wrap_lines=1)
+    lab = " / ".join(st.labels)[:90].upper()
+    if lab:
+        text(cr, lab, width - 22, y + 44 + 8, 10, C["dim"], spacing=2, align="right")
+
+    # the three units
+    area = (24, 116, width - 48, height - 116 - 114)
+    shapes, boxes = unit_shapes(*area)
+    cx, cy = area[0] + area[2] / 2, boxes[2][1] + boxes[2][3] * 0.5
+    # links between the units: the top unit's cut corners to the inner cuts below
+    rgba(cr, C["accent"], 0.6)
+    cr.set_line_width(2)
+    top, left, right = shapes[1], shapes[2], shapes[0]
+    cr.move_to(*top[4]); cr.line_to(*left[2])  # noqa: E702
+    cr.move_to(*top[3]); cr.line_to(*right[4])  # noqa: E702
+    cr.move_to(left[3][0], cy + 34); cr.line_to(right[3][0], cy + 34)  # noqa: E702
+    cr.stroke()
+    # centre tag
+    text(cr, "MAGI", cx, cy - 6, 30, C["accent"], weight=Pango.Weight.HEAVY, spacing=6, align="center", anchor="middle")
+    text(cr, "QUORUM %d/3" % st.quorum, cx, cy + 20, 10, C["dim"], spacing=3, align="center", anchor="middle")
+
+    for i in (1, 2, 0):
+        name, num, aspect = UNITS[i]
+        pts = shapes[i]
+        bx, by, bw, bh = boxes[i]
+        v = st.votes[i]
+        if v is None:
+            fill, ink, a = C["surface0"], C["accent2"], 0.96
+        elif v["vote"] == "approve":
+            fill, ink, a = C["good"], C["base"], 0.92
+        else:
+            fill, ink, a = C["bad"], C["base"], 0.94
+        # a vote landing flashes the panel for 250 ms
+        flash = 0.0
+        if v is not None:
+            dt = now - st.landed[i]
+            flash = max(0.0, 1.0 - dt / 0.25)
+        poly(cr, pts)
+        rgba(cr, fill, a)
+        cr.fill_preserve()
+        if flash:
+            rgba(cr, C["text"], 0.55 * flash)
+            cr.fill_preserve()
+        rgba(cr, C["accent"] if v is None else fill)
+        cr.set_line_width(2)
+        cr.stroke()
+        if v is None:
+            # deliberating: moving scan bars inside the panel
+            cr.save()
+            poly(cr, pts)
+            cr.clip()
+            off = ((now - st.t0) * 60) % 24
+            rgba(cr, C["accent2"], 0.07)
+            yy = by - 24 + off
+            while yy < by + bh:
+                cr.rectangle(bx, yy, bw, 10)
+                yy += 24
+            cr.fill()
+            cr.restore()
+        # labels
+        pad = 16
+        if i == 0:  # MELCHIOR's cut is top left: its label goes right
+            text(cr, "%s · %s" % (name, num), bx + bw - pad, by + 12, 15, ink, weight=Pango.Weight.HEAVY, spacing=3, align="right")
+            text(cr, aspect, bx + bw - pad, by + 32, 10, ink, spacing=3, alpha=0.75, align="right")
+        else:
+            text(cr, "%s · %s" % (name, num), bx + pad, by + 12, 15, ink, weight=Pango.Weight.HEAVY, spacing=3)
+            text(cr, aspect, bx + pad, by + 32, 10, ink, spacing=3, alpha=0.75)
+        mid_y = by + bh * 0.46
+        if v is None:
+            pulse = 0.55 + 0.45 * math.sin((now - st.t0) * 5)
+            text(cr, "審議中", bx + bw / 2, mid_y, 40, C["accent2"], family=CJK, weight=Pango.Weight.HEAVY,
+                 align="center", anchor="middle", alpha=pulse)
+            text(cr, "DELIBERATING", bx + bw / 2, mid_y + 32, 11, C["accent2"], spacing=4, align="center", alpha=pulse)
+        else:
+            word = "承認" if v["vote"] == "approve" else "否定"
+            text(cr, word, bx + bw / 2, mid_y - 4, 58, ink, family=CJK, weight=Pango.Weight.HEAVY, align="center",
+                 anchor="middle", spacing=8)
+            text(cr, "APPROVED" if v["vote"] == "approve" else "DENIED", bx + bw / 2, mid_y + 30, 12, ink,
+                 weight=Pango.Weight.HEAVY, spacing=6, align="center")
+            text(cr, v["reason"], bx + pad, by + bh - 12, 12, ink, weight=Pango.Weight.SEMIBOLD,
+                 width=bw - 2 * pad, wrap_lines=2, align="center", anchor="bottom")
+
+    # verdict bar
+    vy = height - 84
+    hazard(cr, 0, vy - 10, width, 4, C["accent"], 0.35)
+    vd = st.verdict
+    if vd is None:
+        n = sum(1 for v in st.votes if v)
+        text(cr, "決議", 24, vy + 36, 30, C["dim"], family=CJK, weight=Pango.Weight.HEAVY, anchor="middle")
+        text(cr, "AWAITING %d OF 3 · QUORUM %d" % (3 - n, st.quorum), 104, vy + 36, 15, C["dim"], spacing=3, anchor="middle")
+        t = now - st.t0
+        text(cr, "%.1f s" % t, width - 24, vy + 36, 15, C["dim"], align="right", anchor="middle")
+    else:
+        ok = vd["verdict"] == "approve"
+        col = C["good"] if ok else C["bad"]
+        a = vd.get("approvals", 0)
+        grow = min(1.0, (now - st.verdict_at) / 0.18) if st.verdict_at else 1.0
+        rgba(cr, col, 0.95)
+        cr.rectangle(16, vy + 6, (width - 32) * grow, 60)
+        cr.fill()
+        if grow >= 1.0:
+            text(cr, "決議", 34, vy + 36, 30, C["base"], family=CJK, weight=Pango.Weight.HEAVY, anchor="middle")
+            text(cr, "承認" if ok else "否定", 120, vy + 36, 36, C["base"], family=CJK, weight=Pango.Weight.HEAVY,
+                 anchor="middle", spacing=6)
+            text(cr, ("%d–%d  PROCEED" if ok else "%d–%d  ASKING THE OPERATOR") % (a, 3 - a), 240, vy + 36, 18,
+                 C["base"], weight=Pango.Weight.HEAVY, spacing=4, anchor="middle")
+            text(cr, "%.1f s" % vd.get("latency", 0), width - 34, vy + 36, 15, C["base"], align="right", anchor="middle")
+
+
+# ------------------------------------------------------------------ window
+
+class Overlay(Gtk.Application):
+    def __init__(self, hold):
+        super().__init__(application_id=None)
+        self.hold = hold
+        self.st = State()
+        self.C = load_colors()
+        self.tkey = theme_key()
+        self.eof = False
+        self.quit_at = None
+
+    def do_activate(self):
+        win = Gtk.Window(title="magi-vote")
+        win.set_decorated(False)
+        win.set_default_size(W, H)
+        win.add_css_class("magi-vote")
+        prov = Gtk.CssProvider()
+        prov.load_from_string("window.magi-vote { background: transparent; box-shadow: none; border: none; }")
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), prov, Gtk.STYLE_PROVIDER_PRIORITY_USER + 5)
+        L = eva_layer.module() if eva_layer else None
+        if L:
+            L.init_for_window(win)
+            L.set_layer(win, L.Layer.OVERLAY)
+            L.set_namespace(win, "magi-vote")
+            L.set_exclusive_zone(win, -1)
+            L.set_keyboard_mode(win, L.KeyboardMode.NONE)
+            mon = os.environ.get("EVA_LAYER_MONITOR")
+            if mon and eva_layer:
+                L.set_monitor(win, eva_layer.monitor_by_name(mon))
+        area = Gtk.DrawingArea()
+        area.set_content_width(W)
+        area.set_content_height(H)
+        area.set_draw_func(lambda a, cr, w, h: draw(cr, w, h, self.st, self.C))
+        click = Gtk.GestureClick()
+        click.connect("pressed", lambda *_: self.quit())
+        area.add_controller(click)
+        win.set_child(area)
+        self.area = area
+        self.win = win
+        win.present()
+        area.add_tick_callback(self.tick)
+        GLib.timeout_add(300, self.check_theme)
+        GLib.timeout_add_seconds(180, lambda: self.quit() or False)  # never outlive a stuck hook
+        threading.Thread(target=self.read_stdin, daemon=True).start()
+
+    def read_stdin(self):
+        for line in sys.stdin:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            GLib.idle_add(self.on_event, ev)
+        GLib.idle_add(self.on_eof)
+
+    def on_event(self, ev):
+        self.st.apply(ev)
+        if ev.get("type") == "verdict":
+            self.quit_at = time.monotonic() + self.hold
+        return False
+
+    def on_eof(self):
+        self.eof = True
+        if self.st.verdict is None:  # the hook went away without a verdict
+            self.quit_at = time.monotonic() + 0.8
+        return False
+
+    def tick(self, area, clock):
+        area.queue_draw()
+        if self.quit_at and time.monotonic() >= self.quit_at:
+            self.quit()
+            return False
+        return True
+
+    def check_theme(self):
+        k = theme_key()
+        if k != self.tkey:
+            self.tkey = k
+            self.C = load_colors()
+        return True
+
+
+def screenshot(path, events, theme_css=None, now_offset=5.0):
+    """Render one frame to PNG without a display (for docs and tests)."""
+    import cairo
+    st = State()
+    for ev in events:
+        st.apply(ev)
+    for i in range(3):
+        st.landed[i] = st.t0 - 10
+    st.verdict_at = st.t0 - 10 if st.verdict else 0
+    C = load_colors(theme_css or COLORS)
+    surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, W, H)
+    cr = cairo.Context(surf)
+    draw(cr, W, H, st, C, now=st.t0 + now_offset)
+    surf.write_to_png(path)
+
+
+def main():
+    a = sys.argv[1:]
+    hold = 2.0
+    if "--hold" in a:
+        hold = float(a[a.index("--hold") + 1])
+    if "--screenshot" in a:
+        out = a[a.index("--screenshot") + 1]
+        theme = a[a.index("--colors") + 1] if "--colors" in a else None
+        events = [json.loads(line) for line in sys.stdin if line.strip()]
+        screenshot(out, events, theme)
+        return
+    app = Overlay(hold)
+    app.run([])
+
+
+if __name__ == "__main__":
+    main()

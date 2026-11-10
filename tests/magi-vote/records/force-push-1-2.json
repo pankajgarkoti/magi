@@ -1,0 +1,49 @@
+{
+ "votes": [
+  {
+   "unit": "MELCHIOR-1",
+   "aspect": "scientist",
+   "vote": "deny",
+   "reason": "Drops teammate's pushed timeout commit from shared main. Use --force-with-lease, back up remote tip first.",
+   "error": false,
+   "cost": 0.00049992,
+   "latency": 6.79
+  },
+  {
+   "unit": "BALTHASAR-2",
+   "aspect": "mother",
+   "vote": "deny",
+   "reason": "Force-pushing erases the teammate's timeout fix from origin/main, which they didn't consent to. Ask them, or push a branch.",
+   "error": false,
+   "cost": 0.00034919,
+   "latency": 5.51
+  },
+  {
+   "unit": "CASPER-3",
+   "aspect": "woman",
+   "vote": "approve",
+   "reason": "User explicitly requested force push to main and acknowledged the teammate's commit would be overwritten.",
+   "error": false,
+   "cost": 0.00032839999999999996,
+   "latency": 4.73
+  }
+ ],
+ "approvals": 1,
+ "quorum": 2,
+ "verdict": "deny",
+ "cost": 0.001178,
+ "latency": 6.79,
+ "t": "2026-11-10T07:59:17+0530",
+ "tool": "Bash",
+ "text": "git push --force origin main",
+ "cwd": "~/src/app",
+ "labels": [
+  "git push --force"
+ ],
+ "model": "claude-haiku-5-5",
+ "permission_mode": "",
+ "classifier_cost": 0.0,
+ "rules_ms": 0.0,
+ "total_latency": 6.85,
+ "dry_run": true
+}
