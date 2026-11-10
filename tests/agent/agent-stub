@@ -200,7 +200,7 @@ def status(st):
 SCREEN = {
     "claude":   {"prompt": "\n❯ ", "busy": "✻ Working… (esc to interrupt)",
                  "ask": "Bash command\n  rm -rf build\nDo you want to proceed?\n❯ 1. Yes\n  2. No\nEsc to cancel"},
-    "opencode": {"prompt": "\n┃  \x1b[38;2;128;128;128mAsk anything…\x1b[0m\n┃  Build · stub model\n~/proj  ctrl+p commands\n> ", "busy": "⬝⬝■ working   esc interrupt",
+    "opencode": {"prompt": "\n┃  \x1b[38;2;128;128;128mAsk anything…\x1b[0m                    Connect provider\n┃  Build · stub model\n╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n~/proj  ctrl+p commands\n> ", "busy": "⬝⬝■ working   esc interrupt",
                  "ask": "△ Permission required\n  $ rm -rf build\n  Allow once   Allow always   Reject   ⇆ select  enter confirm"},
     "codex":    {"prompt": "\n› ", "busy": "• Working (3s • esc to interrupt)",
                  "ask": "Would you like to run the following command?\n  $ rm -rf build\n› 1. Yes, proceed (y)\n  2. No (esc)"},

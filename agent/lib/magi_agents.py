@@ -420,15 +420,23 @@ class OpenCode(Agent):
         mode = [i for i, l in enumerate(plain) if re.match(r"\s*┃\s+(Build|Plan)\b.*·", l)]
         if not mode:
             return False
+        # a wide pane has a sidebar on the same rows: read only up to the box's bottom border
+        border = next((l for l in plain[mode[-1] + 1:mode[-1] + 3] if "▀" in l), "")
+        right = border.rfind("▀") + 1 or None
         i = mode[-1] - 1
         while i >= 0 and plain[i].lstrip().startswith("┃"):
-            fg = None
-            for tok in re.split(r"(\x1b\[[0-9;]*m)", lines[i].split("┃", 1)[1]):
+            fg, col = None, 0
+            for tok in re.split(r"(\x1b\[[0-9;]*m)", lines[i]):
                 if tok.startswith("\x1b["):
                     m = re.search(r"38;2;(\d+;\d+;\d+)", tok)
                     fg = m.group(1) if m else fg
-                elif tok.strip() and fg != "128;128;128":
-                    return True
+                    continue
+                for ch in tok:
+                    col += 1
+                    if right and col > right:
+                        break
+                    if ch not in " ┃" and fg != "128;128;128":
+                        return True
             i -= 1
         return False
 
@@ -794,7 +802,8 @@ def watch(window):
     for ev, row in events(window):
         line = event_line(window, ev, row)
         _log(f"{window}: {ev}")
-        deliver_to_orchestrator(line)
+        if not deliver_to_orchestrator(line):
+            _log(f"{window}: {ev} not delivered (the orchestrator stayed busy or had a draft for 10 min)")
     return 0
 
 
