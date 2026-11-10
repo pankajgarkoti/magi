@@ -14,12 +14,13 @@
 #   magi-agent login [AGENT]              that agent's own sign-in
 #   magi-agent spawn WINDOW DIR [BRIEF] [--agent AGENT]   start an agent in a new tmux window
 #   magi-agent agents                     every agent in tmux: window, state, idle minutes, agent
+#   magi-agent wait WINDOW                block until the agent in WINDOW finishes, asks or exits
 #   magi-agent start                      (systemd) build the tmux session; idempotent
 #   magi-agent orchestrator [--resume ID] (tmux window 1) run the orchestrator, or explain what is missing
 #   magi-agent firstrun                   (Hyprland autostart) open setup on the first login
 #
 # Settings: ~/.config/magi/agent.conf (AGENT, SUBAGENT, AGENT_CMD, AGENT_ARGS, ENABLED, VOICE,
-# SOURCE, MODEL, CONSOLE_AT_LOGIN). Nothing here sends anything anywhere except the agent
+# SOURCE, MODEL, CONSOLE_AT_LOGIN, NOTIFY). Nothing here sends anything anywhere except the agent
 # itself; the listener and the voice are local. Adapters: agent/lib/magi_agents.py.
 set -uo pipefail
 export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
@@ -272,10 +273,12 @@ case "${1:-status}" in
   install-claude) AG install claude ;;
   login) AG login ${2:+"$2"} ;;
   spawn) shift; AG spawn "$@" ;;
+  wait) shift; AG wait "$@" ;;
+  watch) shift; AG watch "$@" ;;
   agents) agent_rows | awk -F'\t' 'BEGIN{printf "%-16s %-8s %-9s %-6s %s\n", "WINDOW", "STATE", "AGENT", "IDLE", "PANE"} {printf "%-16s %-8s %-9s %-6s %s\n", $4":"$1, toupper($2), $5, $3"m", $6}' ;;
   start) cmd_start ;;
   orchestrator) shift; cmd_orchestrator "$@" ;;
   firstrun) cmd_firstrun ;;
-  -h|--help|help) sed -n '2,25p' "$self" | sed 's/^# \{0,1\}//' ;;
+  -h|--help|help) sed -n '2,24p' "$self" | sed 's/^# \{0,1\}//' ;;
   *) echo "magi-agent: unknown command $1 (try --help)" >&2; exit 2 ;;
 esac
