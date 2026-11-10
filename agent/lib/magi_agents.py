@@ -46,7 +46,6 @@ import json
 import os
 import pathlib
 import re
-import secrets
 import shlex
 import shutil
 import sqlite3
@@ -324,17 +323,29 @@ class OpenCode(Agent):
     def login_argv(self):
         return [self.path() or "opencode", "auth", "login"]
 
-    def mint_id(self):
-        # opencode creates a session with the id given to --session; MAGI picks it, so state
-        # and resume map to the right session without guessing
-        return "ses_magi" + secrets.token_hex(11)
-
     def launch(self, role, prompt=None, resume=None):
-        sid = resume or self.mint_id()
-        argv = [self.path() or "opencode", "--session", sid]
+        # a fresh start gets no --session: opencode 1.x (the installer's current release) only
+        # accepts the id of a session that already exists. session_id() finds the new one.
+        argv = [self.path() or "opencode"]
+        if resume:
+            argv += ["--session", resume]
         if prompt:
             argv += ["--prompt", prompt]
         return argv, orchestrator_dir() if role == "orchestrator" else None, {}
+
+    def _db_session(self, pid):
+        """The session opencode created in this process's folder after it started, read from
+        opencode's own database (~/.local/share/opencode/opencode.db)."""
+        db = pathlib.Path(os.environ.get("XDG_DATA_HOME", HOME / ".local/share")) / "opencode/opencode.db"
+        try:
+            cwd = os.path.realpath(f"/proc/{pid}/cwd")
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1)
+            row = con.execute("select id from session where directory = ? and parent_id is null and time_created >= ? "
+                              "order by time_created limit 1", (cwd, int((proc_start(pid) - 5) * 1000))).fetchone()
+            con.close()
+            return row and row[0]
+        except (OSError, sqlite3.Error):
+            return None
 
     def _api(self, path):
         sj = pathlib.Path(os.environ.get("XDG_STATE_HOME", HOME / ".local/state")) / "opencode/service.json"
@@ -346,7 +357,7 @@ class OpenCode(Agent):
         return json.loads(urllib.request.urlopen(req, timeout=1.5).read())
 
     def session_id(self, pane, pid):
-        return flag_value(proc_argv(pid), "--session", "-s")
+        return flag_value(proc_argv(pid), "--session", "-s") or self._db_session(pid)
 
     def native_state(self, pane, pid):
         # checked against opencode 2.2.5: /api/session/active lists running sessions (a run that
