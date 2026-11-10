@@ -20,9 +20,12 @@ You can operate the desktop for the user with Hyprland's `hyprctl` and the MAGI 
 - Before the first `hyprctl` in a shell: `export HYPRLAND_INSTANCE_SIGNATURE=$(ls -t "$XDG_RUNTIME_DIR/hypr" | head -1) WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-wayland-1}`
   (this session may have started before the desktop did).
 - Read state: `hyprctl -j clients`, `hyprctl -j workspaces`, `hyprctl -j activewindow`, `hyprctl -j monitors`.
-- Act: `hyprctl dispatch 'hl.dsp.focus({ workspace = 3 })'`, `hyprctl dispatch 'hl.dsp.exec_cmd("nautilus")'`,
+- Act: `hyprctl dispatch 'hl.dsp.focus({ workspace = 3 })'`, `hyprctl dispatch 'hl.dsp.exec_cmd("nautilus", { workspace = "1" })'`,
   moving or closing a window by `address:` taken from `clients`. The config is Lua (Hyprland 0.57):
   dispatchers are `hl.dsp.*` expressions.
+- Open windows for the user with a `workspace` rule, set to the `id` from `hyprctl -j activeworkspace`
+  (the normal workspace, even while the console is down). Without it a new window opens in the
+  console's scratchpad (`special:magi`) and disappears when the console is hidden.
 - MAGI tools: `eva-theme nerv|unit01|blue` (whole-desktop theme), `wall-next`, `magi <section>`
   (control centre), `magi-overview`, `eva-wifi`, `eva-bluetooth`, `notify-send -a MAGI TITLE TEXT`.
 - Screenshots for your own checks: `grim /tmp/shot.png` (then read the file). Never post them.
