@@ -1,9 +1,8 @@
 # MAGI
 
-MAGI is a Fedora remix where the main interface is an orchestrator agent. You speak or type
-to it. It runs other agents, operates the desktop, and asks you only for decisions. The
-desktop around it is Hyprland: square corners, black glass, a hazard stripe here and there,
-three colour themes.
+MAGI is a Fedora/Hyprland setup built around LLM agents. The main interface is an agent
+running in tmux. You speak or type to it. It starts other agents, operates the desktop, and asks
+you only for decisions. The desktop around it is Hyprland with three colour themes.
 
 ![The orchestrator console dropped down over the desktop, NERV theme](docs/screenshots/agent-console.png)
 
@@ -13,6 +12,9 @@ three colour themes.
   agent) runs in tmux window 1 (session `magi`) and starts at login. SUPER+` drops its console over the desktop; the console also opens by
   itself at login. Other agents get their own tmux windows. The orchestrator starts them,
   checks their work, drives Hyprland through `hyprctl`, and brings you decisions.
+- **Workers report back.** `magi-agent spawn` watches each worker it starts. When a worker
+  finishes, stops at a permission prompt, or exits, a `[magi]` message naming the window is
+  typed into the orchestrator, so it doesn't have to poll or guess.
 - **Local voice.** A listener transcribes the microphone with faster-whisper (`base.en`) and
   types the text into the orchestrator as `[voice] …`. Replies are spoken with Piper. Both
   models are part of the image, so speech works offline and no audio leaves the machine.
