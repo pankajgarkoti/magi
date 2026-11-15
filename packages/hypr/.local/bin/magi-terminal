@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# magi-terminal: Alacritty attached to the tmux session "main" (created if missing), so every
+# terminal window is a view of the same session. At login it first waits (up to 20 s) for
+# tmux-restore.service, so the restored layout is what you attach to, not a fresh shell next to it.
+#   magi-terminal [SESSION]      default: main
+session=${1:-main}
+if systemctl --user is-enabled -q tmux-restore.service 2>/dev/null; then
+  for _ in $(seq 40); do
+    systemctl --user is-active -q tmux-restore.service && break
+    systemctl --user is-failed -q tmux-restore.service && break
+    sleep 0.5
+  done
+fi
+exec alacritty -e tmux new-session -A -s "$session"

@@ -8,6 +8,7 @@ the same as typing it. Based on the bridge listener (github.com/pankajgarkoti/br
   listen.py --once SECONDS  record from the mic for SECONDS, print the transcript, exit
   listen.py --level         print the mic level (0-100) ten times a second
 """
+import json
 import os
 
 os.environ.setdefault("HF_HUB_OFFLINE", "1")  # models ship with MAGI; never fetch at start-up
@@ -40,6 +41,16 @@ def log(msg):
     os.makedirs(STATE, exist_ok=True)
     with open(LOG, "a") as f:
         f.write(line + "\n")
+
+
+def transcript(text):
+    """Dated record of what was heard, for the voice digest (orch voice-digest): one JSON line
+    per utterance in ~/.local/state/magi/voice/transcripts/YYYY-MM-DD.jsonl. Local only."""
+    d = os.path.join(os.path.dirname(STATE), "voice", "transcripts")
+    os.makedirs(d, exist_ok=True)
+    now = datetime.now().astimezone()
+    with open(os.path.join(d, f"{now:%Y-%m-%d}.jsonl"), "a") as f:
+        f.write(json.dumps({"at": now.isoformat(timespec="seconds"), "text": text}) + "\n")
 
 
 def load_model():
@@ -190,6 +201,7 @@ def main():
                 log(f"ignored: {text!r}")
                 continue
             log(f"heard: {text}")
+            transcript(text)
             deliver(text)
 
 

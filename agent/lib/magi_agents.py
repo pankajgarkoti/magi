@@ -23,6 +23,7 @@ Settings, ~/.config/magi/agent.conf (shell syntax):
   AGENT_PROCESS=name                   custom: its process name (default: first word of AGENT_CMD)
   AGENT_RESUME='... {id}'              custom: optional; without it a custom agent starts fresh
   AGENT_INSTALL='...'                  custom: optional install command
+  AGENT_ONESHOT='... {prompt}'         custom: optional; one non-interactive answer (voice digest)
   AGENT_BUSY_RE / AGENT_ASK_RE         custom: regexes for its working / asking screens
   AGENT_PROMPT='> '                    custom: its prompt, so a typed draft is never reaped
   AGENT_ARGS='...'                     extra arguments for the orchestrator (any agent)
@@ -42,6 +43,7 @@ CLI (used by magi-agent and the setup window):
   magi_agents.py watch WINDOW                   (started by spawn) message the orchestrator when it finishes/asks
   magi_agents.py wait WINDOW                    block until the agent in WINDOW finishes, asks or exits
   magi_agents.py rows                           one TSV line per agent pane (bar, AGENTS page)
+  magi_agents.py oneshot PROMPT                 one non-interactive answer from the agents' adapter (stdout)
   magi_agents.py mcp [NAME]                     add the chrome-devtools MCP server (agent browser on :9222)
   magi_agents.py list                           JSON for every agent pane
 """
@@ -229,6 +231,10 @@ class Agent:
     def mint_id(self):
         return None
 
+    def oneshot_argv(self, prompt):
+        """argv that answers one prompt non-interactively and prints the answer, or None."""
+        return None
+
     # ---- state, for one agent process in a tmux pane
     def native_state(self, pane, pid):
         """dict(state, since, session_id, cwd) from the agent's own files/API, or None."""
@@ -287,6 +293,9 @@ class Claude(Agent):
     def login_argv(self):
         return [self.path() or "claude", "auth", "login"]
 
+    def oneshot_argv(self, prompt):
+        return [self.path() or "claude", "-p", prompt]
+
     def launch(self, role, prompt=None, resume=None):
         argv = [self.path() or "claude"]
         if resume:
@@ -337,6 +346,9 @@ class OpenCode(Agent):
 
     def login_argv(self):
         return [self.path() or "opencode", "auth", "login"]
+
+    def oneshot_argv(self, prompt):
+        return [self.path() or "opencode", "run", prompt]
 
     def launch(self, role, prompt=None, resume=None):
         # a fresh start gets no --session: opencode 1.x (the installer's current release) only
@@ -477,6 +489,9 @@ class Codex(Agent):
     def login_argv(self):
         return [self.path() or "codex", "login"]
 
+    def oneshot_argv(self, prompt):
+        return [self.path() or "codex", "exec", prompt]
+
     def launch(self, role, prompt=None, resume=None):
         argv = [self.path() or "codex"]
         if resume:
@@ -583,6 +598,10 @@ class Custom(Agent):
         self.prompt_char = self.c.get("AGENT_PROMPT") or None
         if self.cmd:
             self.label = os.path.basename(words[0])
+
+    def oneshot_argv(self, prompt):
+        t = self.c.get("AGENT_ONESHOT")   # e.g. AGENT_ONESHOT='aider --message {prompt} --yes'
+        return [x.replace("{prompt}", prompt) for x in shlex.split(t)] if t else None
 
     def launch(self, role, prompt=None, resume=None):
         if resume and self.c.get("AGENT_RESUME"):
@@ -913,6 +932,19 @@ def main(argv):
         if cmd == "login":
             la = a.login_argv()
             return subprocess.call(la) if la else 0
+    if cmd == "oneshot" and rest:
+        # one prompt to the agents' adapter, answer on stdout (orch voice-digest)
+        a = get(role="agents")
+        argv = a.oneshot_argv(rest[0]) if a.installed() else None
+        if not argv:
+            return 3
+        try:
+            r = subprocess.run(argv, capture_output=True, text=True, timeout=int(os.environ.get("MAGI_ONESHOT_TIMEOUT", 300)),
+                               stdin=subprocess.DEVNULL, cwd=str(HOME))
+        except (OSError, subprocess.TimeoutExpired):
+            return 4
+        print(r.stdout.strip())
+        return r.returncode
     if cmd == "mcp":
         print(ensure_mcp(rest[0] if rest else None))
         return 0

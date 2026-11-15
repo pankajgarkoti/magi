@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# MAGI login session (GDM: "MAGI"). On the first login it links the MAGI configs from the
-# image into $HOME with /usr/share/magi/install.sh --no-packages (anything it would replace
-# goes to ~/.magi-backup/<timestamp>/ first). After an image update it re-links, so new
-# files show up. Missing wallpapers download in the background. Then Hyprland starts.
+# mAGI login session (GDM: "mAGI"). On the first login, and after an image update, it links the
+# mAGI configs from the image into $HOME (install.sh --links-only; anything it would replace goes
+# to ~/.magi-backup/<timestamp>/ first), starts Hyprland, and runs the theme, settings and checks
+# in the background once Hyprland is up. Missing wallpapers download in the background, and
+# `orch init` sets up ~/notes. Hyprland is retried if it fails to start.
 # Log: ~/.local/state/magi/session.log
 MAGI=/usr/share/magi
 state=${XDG_STATE_HOME:-$HOME/.local/state}/magi
@@ -11,12 +12,13 @@ log=$state/session.log
 image=$(cat "$MAGI/IMAGE_VERSION" 2>/dev/null || echo unknown)
 {
   echo "== $(date -Is) MAGI session, image $image"
-  if [ ! -f "$state/installed" ]; then
-    "$MAGI/install.sh" --no-packages --no-wallpapers
-  elif [ "$(cat "$state/image" 2>/dev/null)" != "$image" ]; then
-    "$MAGI/install.sh" --update --no-packages --no-wallpapers
+  # Only the links before the compositor: GDM shows its login screen again if a session has not
+  # put anything on screen within about ten seconds, and the theme and settings steps can take
+  # longer than that at first login. They run in the background once Hyprland is up (below).
+  if [ ! -f "$state/installed" ] || [ "$(cat "$state/image" 2>/dev/null)" != "$image" ]; then
+    "$MAGI/install.sh" --links-only --no-packages --no-wallpapers
+    full=1
   fi
-  echo "$image" > "$state/image"
   # browser-bus: the default probe (unread counts in tab titles; host and number only).
   # Once per user (marker file; browser-bus creates the folder itself), so removing it sticks.
   probes=${XDG_CONFIG_HOME:-$HOME/.config}/browser-bus/probes
@@ -24,7 +26,38 @@ image=$(cat "$MAGI/IMAGE_VERSION" 2>/dev/null || echo unknown)
     mkdir -p "$probes" && cp -n "$MAGI/agent/browser-bus/examples/unread-titles.js" "$probes/" && touch "$state/probes-seeded"
   fi
 } >> "$log" 2>&1
+# First login or a new image: theme, desktop settings and the checks, once the compositor is up
+# (eva-theme restyles a running desktop live). Then remember the image version.
+if [ "${full:-0}" = 1 ]; then
+  (
+    for _ in $(seq 60); do ls "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" 2>/dev/null | grep -qE '^wayland-[0-9]+$' && break; sleep 1; done
+    sleep 2
+    if [ -f "$state/installed" ]; then "$MAGI/install.sh" --update --no-packages --no-wallpapers
+    else "$MAGI/install.sh" --no-packages --no-wallpapers; fi
+    echo "$image" > "$state/image"
+  ) >> "$log" 2>&1 &
+fi
+# notes folder (~/notes, a local git repo), the orchestrator ledger, today's daily note, and the
+# orchestrator layer copied into notes/orchestrator/system and linked from there. In the
+# background: the compositor doesn't need it, and GDM gives a session only seconds to come up.
+( orch init --quiet >> "$log" 2>&1 || echo "orch init failed" >> "$log" ) &
 # EVA wallpapers: download what is missing (quick no-op once they are all there)
 ( "$MAGI/install.sh" --wallpapers-only >> "$log" 2>&1 & )
-if command -v start-hyprland >/dev/null; then exec start-hyprland; fi
-exec Hyprland
+# Start the compositor. If it fails within a few seconds (seen on a first login: it could not
+# open the display while GDM's greeter was still starting), wait and try again, twice.
+hypr=Hyprland; command -v start-hyprland >/dev/null && hypr=start-hyprland
+crashes() { ls "${XDG_CACHE_HOME:-$HOME/.cache}/hyprland/" 2>/dev/null | grep -c '^hyprlandCrashReport'; }
+rc=0
+for attempt in 1 2 3; do
+  t0=$(date +%s) c0=$(crashes)
+  "$hypr"; rc=$?
+  # a normal exit (logout), or it ran for a while: done. start-hyprland returns 0 even after a
+  # crash, so a new crash report within 20 s is what marks a failed start.
+  if [ $(( $(date +%s) - t0 )) -gt 20 ] || { [ "$rc" = 0 ] && [ "$(crashes)" = "$c0" ]; }; then exit "$rc"; fi
+  echo "== $(date -Is) $hypr failed to start (rc $rc, attempt $attempt); retrying in 3 s" >> "$log"
+  # If GDM put its login screen up meanwhile, the seat now belongs to that: take it back for this
+  # session (a user may activate their own session) before trying again.
+  [ -n "${XDG_SESSION_ID:-}" ] && loginctl activate "$XDG_SESSION_ID" >> "$log" 2>&1
+  sleep 3
+done
+exit "$rc"

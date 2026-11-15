@@ -1,0 +1,11 @@
+[Unit]
+# not for system accounts or GDM's greeter account (these units are enabled for every user)
+ConditionUser=!@system
+ConditionUser=!gdm-greeter
+ConditionUser=!gdm
+Description=Action items from what the voice listener heard, into today's daily note
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env orch voice-digest

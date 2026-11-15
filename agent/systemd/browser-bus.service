@@ -1,4 +1,8 @@
 [Unit]
+# not for system accounts or GDM's greeter account (these units are enabled for every user)
+ConditionUser=!@system
+ConditionUser=!gdm-greeter
+ConditionUser=!gdm
 Description=browser-bus: probes in the agent browser's tabs (CDP, 127.0.0.1:9222) -> event bus
 Documentation=https://github.com/pankajgarkoti/magi
 

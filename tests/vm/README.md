@@ -64,6 +64,13 @@ after `test-agent.sh setup` (units, the `bus` and `chrome` windows, the loopback
 the MCP entry, bus delivery into the orchestrator, a probe event from a real page, doctor,
 latencies and memory), and `test-bus.sh reboot` after a reboot.
 
+Terminal session and notes (0.3): `tests/vm/test-session.sh` as a user on their first login
+(Alacritty on workspace 1 attached to tmux `main`, config applied, a second terminal reattaches,
+notes repo, daily note, threads, ledger, system/ links, voice digest), then reboot and
+`test-session.sh reboot` (the prepared window comes back in its folder, running its program).
+To test a first login without reinstalling, create a new user and point GDM's
+`AutomaticLogin` at it.
+
 Without a VM, `tests/agent/test-adapters.sh` runs the same adapter checks (install, sign-in,
 states, spawn, snapshot/restore, reaper) for all four adapters in a throwaway HOME, and
 `tests/agent/test-opencode-real.sh` / `test-codex-real.sh` run the real binaries headless

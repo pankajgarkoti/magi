@@ -1,0 +1,19 @@
+[Unit]
+# not for system accounts or GDM's greeter account (these units are enabled for every user)
+ConditionUser=!@system
+ConditionUser=!gdm-greeter
+ConditionUser=!gdm
+Description=Rebuild the saved tmux layout at login (log: ~/.local/state/tmux-snapshot/restore.log)
+Documentation=https://github.com/pankajgarkoti/magi
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env tmux-restore
+# The tmux server it starts lives in this unit's cgroup: stopping or restarting the unit must
+# not take the windows down with it.
+KillMode=process
+
+[Install]
+WantedBy=default.target

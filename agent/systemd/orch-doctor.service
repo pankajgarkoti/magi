@@ -1,4 +1,8 @@
 [Unit]
+# not for system accounts or GDM's greeter account (these units are enabled for every user)
+ConditionUser=!@system
+ConditionUser=!gdm-greeter
+ConditionUser=!gdm
 Description=MAGI orchestrator health check: units, tmux windows, agent browser, browser-bus, ledger
 
 [Service]

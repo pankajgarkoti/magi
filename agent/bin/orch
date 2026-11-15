@@ -1,13 +1,25 @@
 #!/usr/bin/env python3
 """orch: the orchestrator's ledger and health check.
 
-One SQLite file records what the orchestrator runs and tracks, so a restart, a reboot or a
-compacted context loses nothing:  ~/.local/share/magi/orch.db  (WAL; one backup a day, 14 kept)
+The notes folder (~/notes, NOTES_DIR in ~/.config/magi/agent.conf) is a local git repository:
+
+  templates/daily.md                 the daily-note template: # Tasks, # Notes, # Logs, # Scratch
+  Journal/YYYY/MM/YYYY-MM-DD.md      one note a day. The orchestrator writes open threads under
+                                     "## Open threads" (inside # Tasks; tick a box to close it),
+                                     voice action items as "## From voice (...)" sections, and
+                                     decisions, deliverables and finished agents under # Logs
+  orchestrator/orch.db               the ledger (SQLite, WAL; one backup a day in backups/, 14 kept)
+  orchestrator/briefs/DATE/NAME.md   every brief given to an agent through `orch spawn`
+  orchestrator/system/               the orchestrator layer (scripts, units, ORCHESTRATOR.md),
+                                     copied from the image and symlinked into ~/.local/bin and
+                                     ~/.config/systemd/user by system/install.sh
+
+`orch doctor` commits changes to the notes repo (local commits only; nothing is pushed).
 
 Tables
   agents        agent windows started through `orch spawn`: name, pane, cwd, brief, status, result
-  threads       open threads (work or decisions not yet addressed); the human view is
-                ~/.local/share/magi/threads.md, one checkbox per thread: tick it there to close it
+  threads       open threads (work or decisions not yet addressed); the human view is the daily
+                note's "## Open threads" checklist: tick a box there to close it
   watchers      probes, monitors and other standing watches: what, why, until when, last seen working
   decisions     the user's decisions, so nothing is asked twice
   deliverables  PRs, deploys, releases, messages sent
@@ -15,7 +27,7 @@ Tables
   events        a mirror of the event bus log (~/.local/state/orchestrator/events.jsonl)
 
 Commands (idempotent; none blocks for more than a few seconds)
-  orch init                                  create or upgrade the schema
+  orch init                                  set up the notes repo, ledger and system/ (idempotent)
   orch spawn NAME DIR BRIEF [--task T] [--agent A]   copy the brief, magi-agent spawn, ledger row
   orch agent done|lost NAME [--result R]
   orch agents [--all]                        running agents (or all)
@@ -29,6 +41,9 @@ Commands (idempotent; none blocks for more than a few seconds)
   orch up                                    start everything: tmux session, core windows, doctor
   orch doctor [--quiet]                      check every piece, fix what is safe, report the rest on the bus
   orch nudge-threads                         (orch-open-threads.timer) put the open-thread count on the bus
+  orch voice-digest                          (voice-digest.timer) action items from what the listener heard -> daily note
+  orch system update                         refresh notes/orchestrator/system from the image, re-link, commit
+  orch note [today|path]                     today's daily note (created from the template); print its path
 """
 import datetime as dt, hashlib, json, os, pathlib, re, shutil, sqlite3, subprocess, sys, time
 
@@ -36,10 +51,29 @@ HOME = pathlib.Path.home()
 DATA = pathlib.Path(os.environ.get("XDG_DATA_HOME", HOME / ".local/share")) / "magi"
 STATE_HOME = pathlib.Path(os.environ.get("XDG_STATE_HOME", HOME / ".local/state"))
 CONF = pathlib.Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "magi/agent.conf"
-DB = DATA / "orch.db"
-BACKUPS = DATA / "backups"
-BRIEFS = DATA / "briefs"
-THREADS = DATA / "threads.md"
+
+
+def _notes_dir():
+    v = os.environ.get("ORCH_NOTES")
+    try:
+        for line in CONF.read_text().splitlines():
+            if line.startswith("NOTES_DIR=") and not v:
+                v = line.split("=", 1)[1].strip().strip("'\"")
+    except OSError:
+        pass
+    return pathlib.Path(os.path.expanduser(v or "~/notes"))
+
+
+NOTES = _notes_dir()
+ROOT = NOTES / "orchestrator"
+DB = ROOT / "orch.db"
+BACKUPS = ROOT / "backups"
+BRIEFS = ROOT / "briefs"
+SYSDIR = ROOT / "system"
+TEMPLATE = NOTES / "templates/daily.md"
+OLD_DB, OLD_THREADS = DATA / "orch.db", DATA / "threads.md"   # 0.2.0 locations, migrated by init
+VOICE = STATE_HOME / "magi/voice"
+IMAGE_AGENT = pathlib.Path("/usr/share/magi/agent")
 BUS = STATE_HOME / "orchestrator/events.jsonl"
 BB_STATUS = STATE_HOME / "browser-bus/status.json"
 REAP_LOG = STATE_HOME / "tmux-reap/closed.log"
@@ -70,10 +104,11 @@ CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
 """
 
 # What the doctor expects. User units enabled for everyone in the image (systemctl --global):
-ALWAYS_UNITS = ["orch-bus.service", "browser-bus.service", "orch-doctor.timer", "orch-open-threads.timer"]
+ALWAYS_UNITS = ["orch-bus.service", "browser-bus.service", "orch-doctor.timer", "orch-open-threads.timer",
+                "tmux-snapshot.timer", "voice-digest.timer", "tmux-restore.service"]
 # ... and the ones `magi-agent on` enables:
-AGENT_UNITS = ["magi-agents.service", "tmux-snapshot.timer", "tmux-reap-stale.timer"]
-ONESHOT = {"magi-agents.service"}  # run once at login; only check that it is enabled
+AGENT_UNITS = ["magi-agents.service", "tmux-reap-stale.timer"]
+ONESHOT = {"magi-agents.service", "tmux-restore.service"}  # run once at login; only check that it is enabled
 SCRIPTS = ["orch-bus", "browser-bus", "chrome-debug", "magi-agent", "tmux-snapshot", "tmux-restore", "tmux-reap-stale"]
 # Core windows of session magi and what runs in them (magi-agent start creates them).
 WINDOWS = {"orchestrator": None, "bus": "orch-bus live", "chrome": "chrome-debug"}
@@ -96,12 +131,19 @@ def conf():
 
 
 def db():
-    DATA.mkdir(parents=True, exist_ok=True)
+    ROOT.mkdir(parents=True, exist_ok=True)
+    if not DB.exists() and OLD_DB.exists():  # 0.2.0 kept the ledger in ~/.local/share/magi
+        src, dst = sqlite3.connect(OLD_DB), sqlite3.connect(DB)
+        src.backup(dst)
+        dst.close(); src.close()
+        OLD_DB.rename(OLD_DB.with_suffix(".db.moved-to-notes"))
     c = sqlite3.connect(DB, timeout=10)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA busy_timeout=10000")
     c.executescript(SCHEMA)
+    if "note_day" not in [r[1] for r in c.execute("PRAGMA table_info(threads)")]:
+        c.execute("ALTER TABLE threads ADD COLUMN note_day TEXT")
     return c
 
 
@@ -187,6 +229,7 @@ def agent_set(args):
         c.execute("INSERT INTO agents(name,status,result,started_at,ended_at,updated_at) VALUES(?,?,?,?,?,?)",
                   (name, status, opt(args, "--result"), now(), now(), now()))
     c.commit()
+    note_log(f"agent {name} {status}" + (f": {opt(args, '--result')}" if opt(args, "--result") else ""))
 
 
 def agents_list(args):
@@ -195,51 +238,137 @@ def agents_list(args):
         print(f"{r['started_at'][:16]}  {r['status']:8} {r['name']:18} {r['pane'] or '':5} {(r['task'] or '')[:90]}")
 
 
-# ---------------------------------------------------------------- threads (threads.md is the human view)
-def threads_file():
-    if not THREADS.exists():
-        DATA.mkdir(parents=True, exist_ok=True)
-        THREADS.write_text("# Open threads\n\nWork or decisions the orchestrator has not closed yet. Tick a box ([x]) "
-                           "once it is addressed.\n\n")
-    return THREADS.read_text()
+# ---------------------------------------------------------------- daily notes
+DEFAULT_TEMPLATE = """---
+template_version: 1
+---
+
+# Tasks
+
+- [ ]
+
+# Notes
+
+# Logs
+
+# Scratch
+"""
+HEAD = "## Open threads"
 
 
+def note_path(day=None):
+    day = day or dt.date.today()
+    return NOTES / f"Journal/{day:%Y}/{day:%m}/{day:%Y-%m-%d}.md"
+
+
+def note_lines(day=None):
+    p = note_path(day)
+    if not p.exists():
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(TEMPLATE.read_text() if TEMPLATE.exists() else DEFAULT_TEMPLATE)
+    return p.read_text().split("\n")
+
+
+def _section_end(lines, start, level):
+    """Index after the last line of the section that starts at `start` (a heading of `level` #s)."""
+    j = start + 1
+    while j < len(lines) and not re.match(r"#{1,%d} " % level, lines[j]):
+        j += 1
+    while j > start + 1 and lines[j - 1].strip() == "":
+        j -= 1
+    return j
+
+
+def note_insert(items, top="# Tasks", sub=None, day=None):
+    """Append lines to section `top` (and its "## sub" subsection, created if missing) of a daily note."""
+    lines = note_lines(day)
+    if top not in lines:
+        lines += ["", top, ""]
+    t = lines.index(top)
+    if sub:
+        end = _section_end(lines, t, 1)
+        idx = next((i for i in range(t + 1, end) if lines[i] == sub), None)
+        if idx is None:
+            lines[end:end] = ["", sub]
+            idx = end + 1
+        k = _section_end(lines, idx, 2)
+    else:
+        k = _section_end(lines, t, 1)
+    if lines[k - 1].strip() == "- [ ]":  # the template's empty first task
+        k -= 1
+        del lines[k]
+    lines[k:k] = items
+    note_path(day).write_text("\n".join(lines))
+    return note_path(day)
+
+
+def note_log(text):
+    """One line under # Logs of today's note."""
+    note_insert([f"- {dt.datetime.now():%H:%M} · {' '.join(text.split())}"], top="# Logs")
+
+
+def note_cmd(args):
+    note_lines()
+    print(note_path())
+
+
+# ---------------------------------------------------------------- threads (the daily note is the human view)
 def thread_cmd(args):
     sub = args[0] if args else "scan"
     if sub == "add":
         line = " ".join(args[1].split())
         details = "" if sys.stdin.isatty() else sys.stdin.read()
-        text = threads_file()
-        if f"] {line}" not in text:
-            with THREADS.open("a") as f:
-                f.write(f"- [ ] {dt.datetime.now():%Y-%m-%d %H:%M} · {line}\n")
-                if details.strip():
-                    f.write("".join(f"      {l}\n" for l in details.strip().splitlines()))
+        day = dt.date.today()
+        if not any(l.startswith("- [") and line in l for l in note_lines()):
+            item = f"- [ ] {dt.datetime.now():%H:%M} · {line}"
+            if details.strip():
+                side = note_path().with_name(f"{day:%Y-%m-%d}.threads.md")
+                anchor = f"{dt.datetime.now():%H%M%S}"
+                new = not side.exists()
+                with side.open("a") as f:
+                    if new:
+                        f.write(f"# Open-thread details · {day}\n\nLinked from [[{note_path().stem}]] → {HEAD}.\n")
+                    f.write(f"\n## {anchor}\n{dt.datetime.now():%Y-%m-%d %H:%M} · {line}\n\n{details.rstrip()}\n")
+                item += f" ([[{side.stem}#{anchor}|details]])"
+            note_insert([item], top="# Tasks", sub=HEAD)
         c = db()
-        c.execute("INSERT OR IGNORE INTO threads(raised_at,line,details,source) VALUES(?,?,?,?)",
-                  (now(), line, details, opt(args, "--source", "orchestrator")))
+        c.execute("INSERT OR IGNORE INTO threads(raised_at,note_day,line,details,source) VALUES(?,?,?,?,?)",
+                  (now(), day.isoformat(), line, details, opt(args, "--source", "orchestrator")))
         c.commit()
-        print(THREADS)
+        print(note_path())
         return
     sync_threads()
-    rows = db().execute("SELECT raised_at,line FROM threads WHERE status='open' ORDER BY id DESC").fetchall()
+    rows = db().execute("SELECT raised_at,note_day,line FROM threads WHERE status='open' ORDER BY id DESC").fetchall()
     if sub == "count":
         print(len(rows))
     else:
         for r in rows:
-            print(f"{r['raised_at'][:16]}  {r['line']}")
+            print(f"{r['note_day'] or r['raised_at'][:10]}  {r['line']}   [{note_path(dt.date.fromisoformat(r['note_day'])) if r['note_day'] else ''}]")
 
 
-def sync_threads():
+def sync_threads(days=30):
+    """Mirror the "## Open threads" checkboxes of the last `days` daily notes into the ledger:
+    a ticked box there closes the thread here."""
     c = db()
-    for ln in threads_file().splitlines():
-        m = re.match(r"- \[( |x|X)\] (?:\d{4}-\d\d-\d\d \d\d:\d\d · )?(.*)", ln)
-        if not m:
+    today = dt.date.today()
+    for n in range(days):
+        day = today - dt.timedelta(days=n)
+        p = note_path(day)
+        if not p.exists():
             continue
-        line, ticked = m.group(2).strip(), m.group(1) != " "
-        c.execute("INSERT OR IGNORE INTO threads(raised_at,line,source) VALUES(?,?,'file')", (now(), line))
-        c.execute("UPDATE threads SET status=?, resolved_at=CASE WHEN ? THEN COALESCE(resolved_at,?) ELSE NULL END WHERE line=?",
-                  ("done" if ticked else "open", ticked, now(), line))
+        inside = False
+        for ln in p.read_text().split("\n"):
+            if ln.startswith("#"):
+                inside = ln.strip() == HEAD
+                continue
+            m = re.match(r"- \[( |x|X)\] (.*)", ln) if inside else None
+            if not m:
+                continue
+            line = re.sub(r"^\d\d:\d\d · ", "", m.group(2)).split(" ([[")[0].strip()
+            ticked = m.group(1) != " "
+            c.execute("INSERT OR IGNORE INTO threads(raised_at,note_day,line,source) VALUES(?,?,?,'note')", (now(), day.isoformat(), line))
+            c.execute("UPDATE threads SET note_day=COALESCE(note_day,?), status=?, resolved_at=CASE WHEN ? THEN COALESCE(resolved_at,?) ELSE NULL END WHERE line=?",
+                      (day.isoformat(), "done" if ticked else "open", ticked, now(), line))
     c.commit()
 
 
@@ -270,6 +399,7 @@ def decide(args):
     c = db()
     c.execute("INSERT INTO decisions(at,text,context) VALUES(?,?,?)", (now(), args[0], opt(args, "--context")))
     c.commit()
+    note_log(f"decision: {args[0]}")
 
 
 def deliver(args):
@@ -277,6 +407,7 @@ def deliver(args):
     c.execute("INSERT OR REPLACE INTO deliverables(at,kind,ref,title,url) VALUES(?,?,?,?,?)",
               (now(), args[0], args[1], args[2], opt(args, "--url")))
     c.commit()
+    note_log(f"{args[0]} {args[1]}: {args[2]}" + (f" ({opt(args, '--url')})" if opt(args, "--url") else ""))
 
 
 # ---------------------------------------------------------------- sync / status
@@ -426,6 +557,27 @@ def doctor(args):
         problems.append(f"bus not writable: {e}")
     for r in db().execute("SELECT name,until FROM watchers WHERE status='active' AND until IS NOT NULL AND until < ?", (now(),)):
         problems.append(f"watcher {r['name']} passed its end time {r['until']}: end it or extend it")
+    # notes repo and the system layer linked from it
+    if not (NOTES / ".git").exists():
+        init(["--quiet"])
+        (fixed if (NOTES / ".git").exists() else problems).append(f"notes repo set up at {NOTES}")
+    if (SYSDIR / "agent").exists():
+        bad = link_problems()
+        if bad:
+            problems.append(f"not linked from {SYSDIR}: {', '.join(bad[:5])}")
+        have = (SYSDIR / "VERSION").read_text().strip() if (SYSDIR / "VERSION").exists() else ""
+        if have and have != image_version():
+            # After an image update: refresh system/ by itself, unless the user has edited it
+            # (uncommitted changes, or a commit there that isn't one of orch's own).
+            dirty = git("status", "--porcelain", "--", "orchestrator/system").stdout.strip()
+            last = git("log", "-1", "--format=%s", "--", "orchestrator/system").stdout.strip()
+            if not dirty and last.startswith("system: orchestrator layer from"):
+                system_update(quiet=True)
+                fixed.append(f"orchestrator layer in the notes updated to {image_version()}")
+            else:
+                problems.append(f"the image has a newer orchestrator layer ({image_version()}); system/ in the notes has your edits "
+                                f"(version {have}): merge, or run `orch system update` to replace them")
+    note_lines()  # today's daily note exists
     backup()
     sync()
     # Report on the bus only when the set of problems changes, so a lasting problem is said once,
@@ -442,6 +594,8 @@ def doctor(args):
     c.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('doctor_sig',?)", (sig,))
     c.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('doctor_last',?)", (now()[:16] + (" OK" if not problems else f" {len(problems)} problems"),))
     c.commit()
+    c.close()
+    commit_notes()  # last, so the ledger rows written above are part of the commit
     if not quiet or problems:
         print("doctor:", "OK" if not problems else "PROBLEMS:\n  " + "\n  ".join(problems), ("\nfixed: " + ", ".join(fixed)) if fixed else "")
     return 1 if problems else 0
@@ -481,19 +635,222 @@ def nudge_threads(_):
     n = db().execute("SELECT COUNT(*) n FROM threads WHERE status='open'").fetchone()["n"]
     if not n:
         return
-    msg = (f"{n} open thread{'s' if n != 1 else ''} in {THREADS} (orch thread scan). Raise each with the user in plain "
-           f"words; tick it in that file once it is addressed.")
+    msg = (f"{n} open thread{'s' if n != 1 else ''} in the daily notes (orch thread scan). Raise each with the user in "
+           f"plain words; tick it under '{HEAD}' in its daily note once it is addressed.")
     bus("open-threads", msg)
     c = db()
     c.execute("INSERT INTO nudges(at,kind,text) VALUES(?,?,?)", (now(), "open-threads", msg))
     c.commit()
 
 
-def init(_):
+# ---------------------------------------------------------------- notes repo: git, system layer
+SYS_INSTALL = """#!/usr/bin/env bash
+# Link the orchestrator layer from this notes repo into place: scripts into ~/.local/bin, user
+# units into ~/.config/systemd/user, then enable the units units.json marks "enabled".
+# The notes repo is the source of truth: edit here (or at the linked path; it is the same file)
+# and commit. `orch system update` refreshes agent/ from the mAGI image. Safe to run twice.
+set -euo pipefail
+S=$(cd "$(dirname "$0")" && pwd)
+mkdir -p ~/.local/bin ~/.config/systemd/user
+ln_s() { if [ -e "$2" ] && [ ! -L "$2" ]; then mv "$2" "$2.pre-notes.$(date +%s)"; fi; ln -sfn "$1" "$2"; }
+for f in "$S"/agent/bin/*; do ln_s "$f" ~/.local/bin/"$(basename "$f")"; done
+for f in "$S"/agent/systemd/*; do ln_s "$f" ~/.config/systemd/user/"$(basename "$f")"; done
+systemctl --user daemon-reload 2>/dev/null || true
+python3 - "$S/units.json" <<'PY' | while read -r u; do systemctl --user enable "$u" >/dev/null 2>&1 || true; done
+import json, sys
+print("\\n".join(u for u, v in json.load(open(sys.argv[1])).items() if v == "enabled"))
+PY
+echo "linked $(ls "$S"/agent/bin | wc -l) scripts and $(ls "$S"/agent/systemd | wc -l) units from $S"
+"""
+UNIT_STATES = {u: "enabled" for u in ALWAYS_UNITS}
+
+
+def git(*a, timeout=30):
+    return subprocess.run(["git", "-C", str(NOTES), *a], capture_output=True, text=True, timeout=timeout)
+
+
+def commit_notes(msg=None):
+    """Local commit of everything changed in the notes repo; never pushes. Returns the file count."""
+    if not (NOTES / ".git").exists():
+        return 0
+    try:
+        db().execute("PRAGMA wal_checkpoint(TRUNCATE)")  # orch.db self-contained in the commit
+    except Exception:
+        pass
+    changed = [l[3:] for l in git("status", "--porcelain").stdout.splitlines()]
+    if not changed:
+        return 0
+    git("add", "-A")
+    r = git("commit", "-q", "-m", msg or f"notes: sync ({len(changed)} files)\n\n" + "\n".join(changed[:40]))
+    return len(changed) if r.returncode == 0 else 0
+
+
+def agent_source():
+    """The orchestrator layer to copy into system/: the image's, else this checkout's."""
+    if IMAGE_AGENT.is_dir():
+        return IMAGE_AGENT
+    here = HERE.parent
+    return here if (here / "bin/orch").exists() else None
+
+
+def image_version():
+    for f in (pathlib.Path("/usr/share/magi/IMAGE_VERSION"),):
+        try:
+            return f.read_text().strip()
+        except OSError:
+            pass
+    src = agent_source()
+    if src:  # a checkout: hash of the tree, so changes there count as a new version
+        h = hashlib.sha1()
+        for f in sorted(src.rglob("*")):
+            if f.is_file() and "__pycache__" not in f.parts:
+                h.update(str(f.relative_to(src)).encode()); h.update(f.read_bytes())
+        return "tree-" + h.hexdigest()[:12]
+    return "unknown"
+
+
+def system_update(args=None, quiet=False):
+    src = agent_source()
+    if not src:
+        print("system: no mAGI agent tree found (/usr/share/magi/agent)")
+        return 1
+    dst = SYSDIR / "agent"
+    if src.resolve() == dst.resolve():
+        return 0
+    tmp = SYSDIR / "agent.new"
+    shutil.rmtree(tmp, ignore_errors=True)
+    shutil.copytree(src, tmp, symlinks=True, ignore=shutil.ignore_patterns("__pycache__", "voice", "*.pyc"))
+    shutil.rmtree(dst, ignore_errors=True)
+    tmp.rename(dst)
+    (SYSDIR / "units.json").write_text(json.dumps(UNIT_STATES, indent=2) + "\n")
+    inst = SYSDIR / "install.sh"
+    inst.write_text(SYS_INSTALL)
+    inst.chmod(0o755)
+    (SYSDIR / "VERSION").write_text(image_version() + "\n")
+    r = subprocess.run(["bash", str(inst)], capture_output=True, text=True, timeout=120)
+    n = commit_notes(f"system: orchestrator layer from {src} ({image_version()})")
+    if not quiet:
+        print(r.stdout.strip() or r.stderr.strip())
+        print(f"system: {dst} ({'committed' if n else 'no change'})")
+    return r.returncode
+
+
+def link_problems(fix=True):
+    """Every script and unit in system/ should be linked into place; relink what is not."""
+    bad = []
+    for d, live in (("bin", HOME / ".local/bin"), ("systemd", HOME / ".config/systemd/user")):
+        for f in sorted((SYSDIR / "agent" / d).glob("*")):
+            target = live / f.name
+            if not (target.is_symlink() and target.resolve() == f.resolve()):
+                bad.append(str(target))
+    if bad and fix:
+        subprocess.run(["bash", str(SYSDIR / "install.sh")], capture_output=True, timeout=120)
+        bad = link_problems(fix=False)
+    return bad
+
+
+def init(args):
+    quiet = "--quiet" in args
+    new = not (NOTES / ".git").exists()
+    for d in ("templates", "Journal", "orchestrator/briefs", "orchestrator/system"):
+        (NOTES / d).mkdir(parents=True, exist_ok=True)
+    if not TEMPLATE.exists():
+        TEMPLATE.write_text(DEFAULT_TEMPLATE)
+    readme = NOTES / "README.md"
+    if not readme.exists():
+        readme.write_text("# Notes\n\nDaily notes in `Journal/YYYY/MM/YYYY-MM-DD.md` (template: `templates/daily.md`). "
+                          "The mAGI orchestrator writes open threads, voice action items and a log into them; `orchestrator/` "
+                          "holds its ledger, briefs and system files. A local git repository: `orch doctor` commits changes, "
+                          "nothing is pushed.\n")
+    gi = NOTES / ".gitignore"
+    rules = ["orchestrator/orch.db-*", "orchestrator/backups/", "**/__pycache__/", "orchestrator/system/agent.new/"]
+    have = gi.read_text().splitlines() if gi.exists() else []
+    with gi.open("a") as f:
+        for r in rules:
+            if r not in have:
+                f.write(r + "\n")
+    if new:
+        git("init", "-q")
+        if not git("config", "user.name").stdout.strip():
+            user = os.environ.get("USER") or "magi"
+            git("config", "user.name", user)
+            git("config", "user.email", f"{user}@localhost")
     db().commit()
-    threads_file()
+    note_lines()
+    # 0.2.0 kept open threads in ~/.local/share/magi/threads.md: carry the unticked ones over
+    if OLD_THREADS.exists():
+        for ln in OLD_THREADS.read_text().splitlines():
+            m = re.match(r"- \[ \] (?:\d{4}-\d\d-\d\d \d\d:\d\d · )?(.*)", ln)
+            if m:
+                note_insert([f"- [ ] {m.group(1).strip()}"], top="# Tasks", sub=HEAD)
+        OLD_THREADS.rename(OLD_THREADS.with_suffix(".md.moved-to-notes"))
     sync()
-    print(f"ledger ready: {DB}")
+    commit_notes("notes: set up" if new else None)
+    if not (SYSDIR / "agent").exists() or not (SYSDIR / "VERSION").exists():
+        system_update(quiet=True)
+    else:
+        link_problems()
+    if not quiet:
+        print(f"notes: {NOTES} (git) · ledger {DB} · today {note_path()}")
+
+
+def system_cmd(args):
+    if args and args[0] == "update":
+        return system_update()
+    print(f"{SYSDIR} · version {(SYSDIR / 'VERSION').read_text().strip() if (SYSDIR / 'VERSION').exists() else 'none'} · "
+          f"image {image_version()} · unlinked: {', '.join(link_problems(fix=False)) or 'none'}")
+
+
+# ---------------------------------------------------------------- voice digest
+DIGEST_PROMPT = ("Below is what a voice listener heard on this computer between {a} and {b}: the user talking to "
+                 "their orchestrator agent, plus room noise and transcription errors. List only clear action items or "
+                 "requests the user made, one per line, each starting with '- [ ] ' and a short plain sentence. Ignore "
+                 "noise, chatter and anything already done. If there are none, answer exactly NONE.\n\n{text}")
+
+
+def voice_digest(args):
+    """Every 3 h (voice-digest.timer): what the listener heard since the last digest -> action items under
+    "## From voice (HH:MM–HH:MM)" in today's note (via the configured agent, `magi_agents.py oneshot`). Without
+    a working agent the raw lines go under "## Heard (...)" in # Notes. Silent when nothing was heard."""
+    last_f = VOICE / "last-digest"
+    since = dt.datetime.fromisoformat(last_f.read_text().strip()) if last_f.exists() else dt.datetime.now().astimezone() - dt.timedelta(hours=3)
+    until = dt.datetime.now().astimezone()
+    heard = []
+    for f in sorted((VOICE / "transcripts").glob("*.jsonl")):
+        for ln in f.read_text(errors="replace").splitlines():
+            try:
+                e = json.loads(ln)
+                t = dt.datetime.fromisoformat(e["at"])
+            except (ValueError, KeyError):
+                continue
+            if since < t <= until:
+                heard.append((t, e["text"]))
+    VOICE.mkdir(parents=True, exist_ok=True)
+    last_f.write_text(until.isoformat(timespec="seconds"))
+    if not heard:
+        return 0
+    span = f"{since:%H:%M}–{until:%H:%M}"
+    text = "\n".join(f"{t:%H:%M} {x}" for t, x in heard)
+    lib = HERE.parent / "lib/magi_agents.py"
+    try:
+        r = subprocess.run([sys.executable, str(lib), "oneshot", DIGEST_PROMPT.format(a=since.strftime("%H:%M"), b=until.strftime("%H:%M"), text=text)],
+                           capture_output=True, text=True, timeout=400)
+        out = r.stdout.strip() if r.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired):
+        out = ""
+    items = [l.strip() for l in out.splitlines() if l.strip().startswith("- [ ]")]
+    if items:
+        p = note_insert(items, top="# Tasks", sub=f"## From voice ({span})")
+        msg = f"{len(items)} action item(s) from voice ({span}) added to {p}"
+    elif out.strip() == "NONE":
+        msg = f"voice {span}: {len(heard)} lines heard, no action items"
+    else:
+        p = note_insert([f"- {t:%H:%M} {x}" for t, x in heard], top="# Notes", sub=f"## Heard ({span})")
+        msg = f"voice {span}: {len(heard)} lines heard; no agent available to summarise, raw lines in {p}"
+    bus("voice-digest", msg)
+    commit_notes()
+    print(msg)
+    return 0
 
 
 def main():
@@ -506,7 +863,8 @@ def main():
         return agent_set(rest)
     fn = {"init": init, "spawn": spawn, "agents": agents_list, "thread": thread_cmd, "watch": watch_cmd,
           "watches": watches, "decide": decide, "deliver": deliver, "sync": sync, "status": status,
-          "doctor": doctor, "up": up, "nudge-threads": nudge_threads}.get(cmd)
+          "doctor": doctor, "up": up, "nudge-threads": nudge_threads, "voice-digest": voice_digest,
+          "system": system_cmd, "note": note_cmd}.get(cmd)
     if not fn:
         sys.exit(__doc__)
     r = fn(rest)

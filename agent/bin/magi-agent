@@ -218,12 +218,12 @@ cmd_console() {
 
 cmd_on() {
   set_conf ENABLED 1
-  systemctl --user enable --now magi-agents.service tmux-snapshot.timer tmux-reap-stale.timer >/dev/null 2>&1 || cmd_start
+  systemctl --user enable --now magi-agents.service tmux-reap-stale.timer >/dev/null 2>&1 || cmd_start
   echo "mAGI orchestrator on: it starts at every login (magi-agent off to stop)."
 }
 cmd_off() {
   set_conf ENABLED 0
-  systemctl --user disable --now magi-agents.service tmux-snapshot.timer tmux-reap-stale.timer >/dev/null 2>&1 || true
+  systemctl --user disable --now magi-agents.service tmux-reap-stale.timer >/dev/null 2>&1 || true
   tmux kill-window -t "=$SESSION:=listen" 2>/dev/null || true
   echo "mAGI orchestrator off. Running agents were left alone (tmux session magi)."
 }

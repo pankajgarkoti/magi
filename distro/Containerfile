@@ -99,7 +99,7 @@ RUN set -eux; find /usr/share/magi -name __pycache__ -prune -exec rm -rf {} +; \
       rm -f /usr/share/magi/packages/hypr/.config/environment.d/50-magi-path.conf; \
     fi; \
     install -m 644 /usr/share/magi/agent/systemd/* /usr/lib/systemd/user/; \
-    systemctl --global enable orch-bus.service browser-bus.service orch-doctor.timer orch-open-threads.timer; \
+    systemctl --global enable orch-bus.service browser-bus.service orch-doctor.timer orch-open-threads.timer tmux-restore.service tmux-snapshot.timer voice-digest.timer; \
     rm -rf /run/dnf /var/log/dnf5.log /var/lib/dnf /var/cache/libdnf5 /var/cache/ldconfig; \
     echo "${MAGI_VERSION}" > /usr/share/magi/IMAGE_VERSION; \
     echo "IMAGE_VERSION=\"${MAGI_VERSION}\"" >> /usr/lib/os-release; \

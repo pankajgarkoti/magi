@@ -1,7 +1,7 @@
 [Unit]
 Description=MAGI orchestrator: tmux session "magi" (window 1 orchestrator, window "listen" for the local listener)
 Documentation=https://github.com/pankajgarkoti/magi
-After=pipewire.service wireplumber.service
+After=pipewire.service wireplumber.service tmux-restore.service
 Wants=pipewire.service
 
 [Service]

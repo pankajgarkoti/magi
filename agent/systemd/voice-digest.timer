@@ -1,0 +1,13 @@
+[Unit]
+# not for system accounts or GDM's greeter account (these units are enabled for every user)
+ConditionUser=!@system
+ConditionUser=!gdm-greeter
+ConditionUser=!gdm
+Description=Voice digest every 3 hours
+
+[Timer]
+OnBootSec=1h
+OnUnitActiveSec=3h
+
+[Install]
+WantedBy=timers.target

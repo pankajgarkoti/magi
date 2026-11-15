@@ -58,12 +58,14 @@ Options:
   --no-packages     skip COPR + dnf (configs only)
   --no-wallpapers   skip the wallpaper downloads
   --wallpapers-only only generate/download missing wallpapers (the MAGI image runs this at login)
+  --links-only      steps 1-8 only (links, shell, wallpapers), no theme or verify: what the session
+                    needs before the compositor starts; the rest runs once it is up
   -h, --help        this help
 Environment: MAGI_DIR (checkout, default ~/.local/share/magi), MAGI_REPO, MAGI_BRANCH
 EOF
 }
 
-DRY=0 UPDATE=0 THEME= DO_PKGS=1 DO_WALLS=1 ONLY_WALLS=0
+DRY=0 UPDATE=0 THEME= DO_PKGS=1 DO_WALLS=1 ONLY_WALLS=0 LINKS_ONLY=0
 ARGS=("$@")
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -74,6 +76,7 @@ while [ $# -gt 0 ]; do
     --no-packages) DO_PKGS=0 ;;
     --no-wallpapers) DO_WALLS=0 ;;
     --wallpapers-only) ONLY_WALLS=1 DO_PKGS=0 ;;
+    --links-only) LINKS_ONLY=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "install.sh: unknown option $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -311,14 +314,17 @@ EOF
     ok "added a ~/.bashrc.d loader to ~/.bashrc (original copied to backup)"
   fi
 fi
-if [ -d "$HOME/.tmux/plugins/tmux-sensible" ]; then skip "tmux-sensible present"
-elif [ "$DRY" = 1 ]; then printf '  %s[dry-run]%s git clone tmux-sensible\n' "$Y" "$R"
-elif git clone -q --depth 1 https://github.com/tmux-plugins/tmux-sensible "$HOME/.tmux/plugins/tmux-sensible" 2>/dev/null; then ok "tmux-sensible plugin cloned"
-else warn "tmux-sensible not cloned (offline?); tmux works without it"; fi
+# tmux plugins (dracula, tmux-sensible, tpm) are vendored in packages/tmux and linked above: no download
 
 # ---------------------------------------------------------------- 8. wallpapers
 step "Wallpapers"
 wallpapers_step
+
+if [ "$LINKS_ONLY" = 1 ]; then
+  ok "links in place; theme and verify run separately (--links-only)"
+  trap - ERR
+  exit $(( ERRORS > 0 ))
+fi
 
 # ---------------------------------------------------------------- 9. desktop settings + theme
 step "Desktop settings and theme"

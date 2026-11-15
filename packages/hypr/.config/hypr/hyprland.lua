@@ -14,6 +14,10 @@ local theme = load_theme()
 
 local mod      = "SUPER"
 local terminal = "alacritty"
+-- The terminal is a view of one tmux session, "main": a new terminal attaches to it instead of
+-- starting another shell, so windows and panes outlive the terminal (and, through
+-- tmux-snapshot / tmux-restore, a reboot). SUPER + SHIFT + Return opens a plain terminal.
+local session_terminal = "magi-terminal"   -- alacritty -e tmux new-session -A -s main, after tmux-restore
 local launcher = "wofi --show drun"
 local browser  = "magi-browser"   -- default browser from xdg-settings, else Firefox
 local settings = "env XDG_CURRENT_DESKTOP=GNOME gnome-control-center"
@@ -42,6 +46,8 @@ hl.on("hyprland.start", function()
     -- The MAGI console waits, hidden, on its special workspace (SUPER + `): tmux session
     -- "magi", window 1 is the orchestrator when the agent layer is on (magi-agent)
     hl.exec_cmd(terminal .. [[ --class magi-scratch -e sh -c 'command -v magi-agent >/dev/null && exec magi-agent console; exec tmux new-session -A -s magi']])
+    -- Every login opens the terminal attached to tmux session "main", on workspace 1
+    hl.exec_cmd(session_terminal, { workspace = "1" })
     -- Agent layer: first login opens PILOT SETUP; later logins make sure the orchestrator runs
     hl.exec_cmd("sh -c 'command -v magi-agent >/dev/null && exec magi-agent firstrun'")
 end)
@@ -117,7 +123,8 @@ hl.gesture({ fingers = 3, direction = "horizontal", action = "workspace" })
 ------------------------------------------------------------------ keys
 
 -- Apps and windows
-hl.bind(mod .. " + Return", hl.dsp.exec_cmd(terminal))
+hl.bind(mod .. " + Return", hl.dsp.exec_cmd(session_terminal))
+hl.bind(mod .. " + SHIFT + Return", hl.dsp.exec_cmd(terminal))
 hl.bind(mod .. " + Space",  hl.dsp.exec_cmd(launcher))
 hl.bind(mod .. " + B",      hl.dsp.exec_cmd(browser))
 hl.bind(mod .. " + Q",      hl.dsp.window.close())

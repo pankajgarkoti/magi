@@ -1,4 +1,8 @@
 [Unit]
+# not for system accounts or GDM's greeter account (these units are enabled for every user)
+ConditionUser=!@system
+ConditionUser=!gdm-greeter
+ConditionUser=!gdm
 Description=MAGI event bus: type new events into the orchestrator when it is idle (BUS_DELIVERY in ~/.config/magi/agent.conf)
 Documentation=https://github.com/pankajgarkoti/magi
 After=magi-agents.service

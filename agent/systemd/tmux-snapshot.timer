@@ -1,4 +1,8 @@
 [Unit]
+# not for system accounts or GDM's greeter account (these units are enabled for every user)
+ConditionUser=!@system
+ConditionUser=!gdm-greeter
+ConditionUser=!gdm
 Description=Save the tmux layout every minute
 
 [Timer]

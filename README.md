@@ -82,6 +82,43 @@ orchestrator, for example Codex's `--sandbox`: the orchestrator runs tmux and `h
 a tight sandbox may block. The orchestrator starts other agents with
 `magi-agent spawn <window> <dir> <brief>`.
 
+## Your terminal and your notes
+
+**The terminal is one session.** Logging in opens Alacritty on workspace 1, attached to the tmux
+session `main`. SUPER+Return opens another window onto the same session instead of a new shell,
+so closing a terminal window loses nothing: the shells, programs and agents keep running in tmux.
+SUPER+SHIFT+Return opens a plain terminal. tmux has the Dracula status bar, mouse support,
+100,000 lines of history and Alt-key bindings (Alt+C new window, Alt+1…9 switch, Alt+\\ and Alt+-
+split, Alt+H/J/K/L move between panes). The plugins are part of the image, so nothing is
+downloaded at first login.
+
+**It comes back after a reboot.** `tmux-snapshot.timer` saves the layout of every tmux session
+each minute: windows, panes, folders, and what runs in them. At login `tmux-restore.service`
+rebuilds it before the desktop needs it. Agent panes come back with their own resume command
+(`claude --resume <id>`, `opencode --session <id>`, `codex resume <id>`), other programs with
+the command that started them, everything else as a shell in the same folder.
+`tmux-restore --dry-run` shows what it would do; older layouts are in
+`~/.local/state/tmux-snapshot/history/`.
+
+**Notes.** `~/notes` is a local git repository, set up at first login. One note a day in
+`Journal/YYYY/MM/YYYY-MM-DD.md`, from `templates/daily.md`: `# Tasks`, `# Notes`, `# Logs`,
+`# Scratch`. The orchestrator writes into it:
+
+- open threads (decisions you haven't made, parked work) as checkboxes under `## Open threads`.
+  Tick one and it is closed in the ledger too. Every 3 hours the orchestrator is reminded of the
+  ones still open;
+- what you asked for out loud: every 3 hours the voice digest turns what the listener heard into
+  action items under `## From voice (14:00–17:00)`, using your agent non-interactively (without
+  one, the raw lines go under `# Notes`);
+- decisions, releases and finished agents, one line each under `# Logs`.
+
+The ledger, the briefs given to agents and the orchestrator's own scripts and units live in
+`~/notes/orchestrator/`. The scripts and units are copied from the image into
+`orchestrator/system/` and symlinked into `~/.local/bin` and `~/.config/systemd/user`, so they are
+versioned with your notes and `system/install.sh` sets them up again on another machine. After an
+image update `orch doctor` refreshes them, unless you have edited them. `orch doctor` commits the
+notes; nothing is pushed anywhere. `NOTES_DIR=...` in `~/.config/magi/agent.conf` moves the folder.
+
 ## Event bus and agent browser
 
 Both are on by default in the image (`agent/setup.sh` turns them on for an install.sh setup).
@@ -95,13 +132,14 @@ box is empty, so nothing interrupts a turn or a half-typed message. With `BUS_DE
 `orch-bus unread`. The tmux window `bus` follows the log. Worker `[magi]` messages are logged
 there too.
 
-**Ledger and health checks.** `orch` keeps a SQLite ledger (`~/.local/share/magi/orch.db`) of
+**Ledger and health checks.** `orch` keeps a SQLite ledger (`~/notes/orchestrator/orch.db`) of
 the agents the orchestrator started, open threads, standing watchers, your decisions and what
 shipped, so a reboot or a compacted context loses none of it. `orch status` prints it on one
-screen. Open threads are also a checklist in `~/.local/share/magi/threads.md`; tick one to close
-it. `orch-doctor.timer` runs `orch doctor` every 15 minutes: user units, the tmux windows, the
-agent browser, browser-bus, ledger integrity and a daily backup. It fixes what is safe and puts
-the rest on the bus, once per change.
+screen. Open threads are also checkboxes in the daily note (see [Notes](#your-terminal-and-your-notes)).
+`orch-doctor.timer` runs `orch doctor` every 15 minutes: user units, the tmux windows, the
+agent browser, browser-bus, the notes repo and its links, ledger integrity and a daily backup.
+It fixes what is safe and puts the rest on the bus, once per change. (0.2.0 kept the ledger and
+threads in `~/.local/share/magi`; 0.3.0 moves them into the notes at first login.)
 
 **Agent browser.** The tmux window `chrome` runs `chrome-debug`: Fedora's Chromium with its own
 profile (`~/.config/chromium-agent`, seeded once from `~/.config/chromium` if you have one) and
@@ -296,7 +334,8 @@ safe to re-run):
    verified) into `~/.local/share/fonts`.
 6. **Moves any existing file that mAGI would replace to `~/.magi-backup/<timestamp>/`**, then
    links the configs with GNU stow (`packages/*`, linked file by file).
-7. Hooks `~/.bashrc.d` (Fedora's default `.bashrc` already does) and fetches tmux-sensible.
+7. Hooks `~/.bashrc.d` (Fedora's default `.bashrc` already does). The tmux plugins are part of
+   the checkout.
 8. Generates the blue wallpaper and downloads the EVA wallpapers listed in
    [`wallpapers/manifest.tsv`](wallpapers/manifest.tsv) (sha256 checked). If you are offline they are
    skipped and the blue wallpaper is used until you re-run the installer.
@@ -320,7 +359,8 @@ SUPER does window management. Alt is left alone because tmux uses it.
 
 | Keys | Action |
 |---|---|
-| SUPER + Return | Terminal (Alacritty) |
+| SUPER + Return | Terminal, attached to the tmux session `main` |
+| SUPER + SHIFT + Return | Plain terminal (no tmux) |
 | SUPER + Space | App launcher (wofi) |
 | SUPER + SHIFT + Space | mAGI control centre |
 | SUPER + O | Overview / window switcher |
@@ -410,7 +450,9 @@ tests/             container-test.sh (podman, Fedora 44) and the VM test notes
   the original artists. *Neon Genesis Evangelion* is © khara / GAINAX; mAGI is an unofficial
   fan theme.
 - tmux status bar: a lightly modified [dracula/tmux](https://github.com/dracula/tmux) (MIT),
-  plus [tpm](https://github.com/tmux-plugins/tpm) (MIT), both vendored under `packages/tmux`.
+  plus [tpm](https://github.com/tmux-plugins/tpm) and
+  [tmux-sensible](https://github.com/tmux-plugins/tmux-sensible) (both MIT), all vendored under
+  `packages/tmux`.
 - Hyprland packages for Fedora: COPR [sdegler/hyprland](https://copr.fedorainfracloud.org/coprs/sdegler/hyprland/).
 - Font: [IosevkaTerm Nerd Font](https://github.com/ryanoasis/nerd-fonts).
 - mAGI is a Fedora remix: it is built from Fedora packages, but it is not Fedora and is not

@@ -111,9 +111,10 @@ kill $srv 2>/dev/null
 
 # ---- ledger and doctor
 orch thread add "test thread $$" </dev/null >/dev/null
-check "orch thread add -> threads.md + count" bash -c "grep -q 'test thread $$' ~/.local/share/magi/threads.md && [ \$(orch thread count) -ge 1 ]"
-sed -i "s/- \[ \] \(.*test thread $$\)/- [x] \1/" ~/.local/share/magi/threads.md
-check "ticking it in threads.md closes it" bash -c "! orch thread scan | grep -q 'test thread $$'"
+NOTE=$(orch note)
+check "orch thread add -> today's daily note + count" bash -c "grep -q 'test thread $$' $NOTE && [ \$(orch thread count) -ge 1 ]"
+sed -i "s/- \[ \] \(.*test thread $$\)/- [x] \1/" "$NOTE"
+check "ticking it in the daily note closes it" bash -c "! orch thread scan | grep -q 'test thread $$'"
 check "orch doctor: OK" orch doctor
 check "orch status prints" bash -c "orch status | grep -q 'ORCH STATUS'"
 
