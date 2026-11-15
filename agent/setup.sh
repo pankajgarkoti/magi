@@ -13,6 +13,11 @@ mkdir -p "$HOME/.local/bin" "$HOME/.config/systemd/user"
 for f in "$here"/bin/*; do ln -sfn "$f" "$HOME/.local/bin/$(basename "$f")"; done
 for f in "$here"/systemd/*; do ln -sfn "$f" "$HOME/.config/systemd/user/$(basename "$f")"; done
 systemctl --user daemon-reload 2>/dev/null || true
+# the event bus, browser-bus and the health checks run whether or not the orchestrator is on
+systemctl --user enable --now orch-bus.service browser-bus.service orch-doctor.timer orch-open-threads.timer 2>/dev/null || true
+probes=${XDG_CONFIG_HOME:-$HOME/.config}/browser-bus/probes
+[ -d "$probes" ] || { mkdir -p "$probes"; cp "$here/browser-bus/examples/unread-titles.js" "$probes/"; }
+"$here/bin/orch" init >/dev/null 2>&1 || true
 echo "linked $(ls "$here/bin" | wc -l) tools and $(ls "$here/systemd" | wc -l) user units"
 if [ "$voice" = 1 ]; then
   "$here/voice/build.sh" "$VH"

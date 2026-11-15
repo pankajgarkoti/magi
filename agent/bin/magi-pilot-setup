@@ -133,7 +133,7 @@ def sources():
 
 class Pilot(Gtk.ApplicationWindow):
     def __init__(self, app):
-        super().__init__(application=app, title="MAGI · PILOT SETUP")
+        super().__init__(application=app, title="mAGI · PILOT SETUP")
         self.add_css_class("pilot")
         self.set_default_size(760, 560)
         self.set_decorated(False)
@@ -143,7 +143,7 @@ class Pilot(Gtk.ApplicationWindow):
         self.set_child(root)
         hdr = Gtk.Box(spacing=10)
         hdr.add_css_class("header")
-        hdr.append(lbl("MAGI · PILOT SETUP", "title", hexpand=True))
+        hdr.append(lbl("mAGI · PILOT SETUP", "title", hexpand=True))
         hdr.append(lbl("ORCHESTRATOR · VOICE · AGENTS", "aux"))
         root.append(hdr)
         hz = Gtk.Box()
@@ -236,7 +236,7 @@ class Pilot(Gtk.ApplicationWindow):
         self.frame(0, "TALK TO ONE AGENT. IT RUNS THE OTHERS.", [
             btn("NOT NOW", self.not_now), btn("SET UP", lambda: self.step_install(), primary=True)])
         for t in [
-            "MAGI can run an orchestrator agent (Claude Code, opencode, Codex, or any terminal agent) "
+            "mAGI can run an orchestrator agent (Claude Code, opencode, Codex, or any terminal agent) "
             "in tmux window 1 of the session \"magi\". You speak or type to it. It starts other "
             "agents in their own windows, checks their work, drives the desktop with hyprctl, and "
             "asks you only for decisions.",
@@ -311,7 +311,7 @@ class Pilot(Gtk.ApplicationWindow):
                                     "holds MAGI's orchestrator instructions ($MAGI_INSTRUCTIONS has the path). "
                                     "It can't be resumed after a reboot; it starts fresh.")
         else:
-            self.inst_note.set_text("MAGI does not include %s. INSTALL runs its official installer for your user, "
+            self.inst_note.set_text("mAGI does not include %s. INSTALL runs its official installer for your user, "
                                     "into %s:\n%s\n%s" % (info.get("label"), info.get("install_note"),
                                                           info.get("install_shown"), info.get("licence", "")))
         self.inst_btn.set_sensitive(not path and key != "custom")
@@ -517,7 +517,7 @@ class Pilot(Gtk.ApplicationWindow):
         set_conf("VOICE", "1" if on else "0")
         subprocess.run(["magi-agent", "voice", "on" if on else "off"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         touch("setup-done")
-        subprocess.Popen(["notify-send", "-a", "MAGI", "PILOT SETUP COMPLETE",
+        subprocess.Popen(["notify-send", "-a", "mAGI", "PILOT SETUP COMPLETE",
                           "SUPER+` opens the orchestrator. " + ("Say what you want done." if on else "Type what you want done.")],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.get_application().quit()

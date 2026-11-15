@@ -17,6 +17,12 @@ image=$(cat "$MAGI/IMAGE_VERSION" 2>/dev/null || echo unknown)
     "$MAGI/install.sh" --update --no-packages --no-wallpapers
   fi
   echo "$image" > "$state/image"
+  # browser-bus: the default probe (unread counts in tab titles; host and number only).
+  # Only when the folder doesn't exist yet, so removing a probe sticks.
+  probes=${XDG_CONFIG_HOME:-$HOME/.config}/browser-bus/probes
+  if [ ! -d "$probes" ] && [ -f "$MAGI/agent/browser-bus/examples/unread-titles.js" ]; then
+    mkdir -p "$probes" && cp "$MAGI/agent/browser-bus/examples/unread-titles.js" "$probes/"
+  fi
 } >> "$log" 2>&1
 # EVA wallpapers: download what is missing (quick no-op once they are all there)
 ( "$MAGI/install.sh" --wallpapers-only >> "$log" 2>&1 & )

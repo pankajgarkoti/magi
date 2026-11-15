@@ -14,13 +14,15 @@
 #   magi-agent login [AGENT]              that agent's own sign-in
 #   magi-agent spawn WINDOW DIR [BRIEF] [--agent AGENT]   start an agent in a new tmux window
 #   magi-agent agents                     every agent in tmux: window, state, idle minutes, agent
+#   magi-agent mcp [AGENT]                give the agent the chrome-devtools MCP server (agent browser)
 #   magi-agent wait WINDOW                block until the agent in WINDOW finishes, asks or exits
 #   magi-agent start                      (systemd) build the tmux session; idempotent
 #   magi-agent orchestrator [--resume ID] (tmux window 1) run the orchestrator, or explain what is missing
 #   magi-agent firstrun                   (Hyprland autostart) open setup on the first login
 #
 # Settings: ~/.config/magi/agent.conf (AGENT, SUBAGENT, AGENT_CMD, AGENT_ARGS, ENABLED, VOICE,
-# SOURCE, MODEL, CONSOLE_AT_LOGIN, NOTIFY). Nothing here sends anything anywhere except the agent
+# SOURCE, MODEL, CONSOLE_AT_LOGIN, NOTIFY, BROWSER,
+# BUS_DELIVERY). Nothing here sends anything anywhere except the agent
 # itself; the listener and the voice are local. Adapters: agent/lib/magi_agents.py.
 set -uo pipefail
 export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
@@ -43,7 +45,7 @@ orch_md() {
   done
 }
 
-ENABLED=0 VOICE=1 SOURCE= MODEL=base.en CONSOLE_AT_LOGIN=1
+ENABLED=0 VOICE=1 SOURCE= MODEL=base.en CONSOLE_AT_LOGIN=1 BROWSER=1
 # shellcheck disable=SC1090
 [ -f "$CONF" ] && . "$CONF"
 
@@ -69,6 +71,18 @@ tmux_has() { tmux has-session -t "=$SESSION" 2>/dev/null; }
 win_exists() { tmux list-windows -t "=$SESSION" -F '#W' 2>/dev/null | grep -qx "$1"; }
 muted() { [ -e "$STATE/muted" ] || [ "$VOICE" != 1 ]; }
 listener_up() { win_exists listen && tmux list-panes -t "=$SESSION:=listen" -F '#{pane_dead}' 2>/dev/null | grep -qx 0; }
+
+# Core windows next to the orchestrator: "bus" follows the event bus log, "chrome" runs the agent
+# browser (Chromium on 127.0.0.1:9222, see chrome-debug). Both come back after a reboot through
+# tmux-snapshot/tmux-restore like any other window. BROWSER=0 in agent.conf skips the browser.
+ensure_core_windows() {
+  win_exists bus || tmux new-window -d -t "=$SESSION:" -n bus "orch-bus live"
+  if [ "${BROWSER:-1}" != 0 ] && command -v chrome-debug >/dev/null && ! win_exists chrome; then
+    tmux new-window -d -t "=$SESSION:" -n chrome "chrome-debug; exec bash"
+  fi
+  local w; for w in bus chrome; do tmux set-option -w -t "=$SESSION:=$w" automatic-rename off 2>/dev/null; done
+  return 0
+}
 
 ensure_listener() {
   muted && return 0
@@ -96,6 +110,7 @@ cmd_start() {
     tmux swap-window -s "=$SESSION:$idx" -t "=$SESSION:1" 2>/dev/null || tmux move-window -s "=$SESSION:$idx" -t "=$SESSION:1" 2>/dev/null || true
   fi
   tmux set-option -w -t "=$SESSION:=orchestrator" automatic-rename off 2>/dev/null
+  ensure_core_windows
   ensure_listener
   touch "$RUN/tmux-restored"   # lets tmux-snapshot save again
 }
@@ -105,7 +120,7 @@ banner() {
   printf '\e[H\e[2J%s' "$c"
   cat <<'EOF'
  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   MAGI · ORCHESTRATOR              window 1 · session magi
+   mAGI · ORCHESTRATOR              window 1 · session magi
  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 EOF
   printf '%s\n' "$r"
@@ -125,7 +140,7 @@ cmd_orchestrator() {
           "Set it with: magi-agent use custom <command>   (or PILOT SETUP: magi-agent setup)" "" "Waiting... (this window checks every 5 s)"
       else
         banner "$label is not installed." "Open PILOT SETUP: magi-agent setup  (or the AGENTS page in the control centre)" \
-          "It runs the agent's official installer; nothing is bundled with MAGI." "" "Waiting... (this window checks every 5 s)"
+          "It runs the agent's official installer; nothing is bundled with mAGI." "" "Waiting... (this window checks every 5 s)"
       fi
       sleep 5; continue
     fi
@@ -204,13 +219,13 @@ cmd_console() {
 cmd_on() {
   set_conf ENABLED 1
   systemctl --user enable --now magi-agents.service tmux-snapshot.timer tmux-reap-stale.timer >/dev/null 2>&1 || cmd_start
-  echo "MAGI orchestrator on: it starts at every login (magi-agent off to stop)."
+  echo "mAGI orchestrator on: it starts at every login (magi-agent off to stop)."
 }
 cmd_off() {
   set_conf ENABLED 0
   systemctl --user disable --now magi-agents.service tmux-snapshot.timer tmux-reap-stale.timer >/dev/null 2>&1 || true
   tmux kill-window -t "=$SESSION:=listen" 2>/dev/null || true
-  echo "MAGI orchestrator off. Running agents were left alone (tmux session magi)."
+  echo "mAGI orchestrator off. Running agents were left alone (tmux session magi)."
 }
 cmd_voice() {
   case "${1:-toggle}" in
@@ -273,12 +288,13 @@ case "${1:-status}" in
   install-claude) AG install claude ;;
   login) AG login ${2:+"$2"} ;;
   spawn) shift; AG spawn "$@" ;;
+  mcp) AG mcp ${2:+"$2"} ;;
   wait) shift; AG wait "$@" ;;
   watch) shift; AG watch "$@" ;;
   agents) agent_rows | awk -F'\t' 'BEGIN{printf "%-16s %-8s %-9s %-6s %s\n", "WINDOW", "STATE", "AGENT", "IDLE", "PANE"} {printf "%-16s %-8s %-9s %-6s %s\n", $4":"$1, toupper($2), $5, $3"m", $6}' ;;
   start) cmd_start ;;
   orchestrator) shift; cmd_orchestrator "$@" ;;
   firstrun) cmd_firstrun ;;
-  -h|--help|help) sed -n '2,24p' "$self" | sed 's/^# \{0,1\}//' ;;
+  -h|--help|help) sed -n '2,26p' "$self" | sed 's/^# \{0,1\}//' ;;
   *) echo "magi-agent: unknown command $1 (try --help)" >&2; exit 2 ;;
 esac

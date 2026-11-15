@@ -534,7 +534,7 @@ class Page:
 
 class Magi(Gtk.ApplicationWindow):
     def __init__(self, app, css, start, pane=False):
-        super().__init__(application=app, title="MAGI · CONTROL")
+        super().__init__(application=app, title="mAGI · CONTROL")
         self.css = css
         self.add_css_class("magi")
         self.set_default_size(880, 600)
@@ -557,7 +557,7 @@ class Magi(Gtk.ApplicationWindow):
 
         head = Gtk.Box(spacing=8)
         head.add_css_class("header")
-        head.append(lbl("MAGI · CONTROL CENTRE", "title", hexpand=True))
+        head.append(lbl("mAGI · CONTROL CENTRE", "title", hexpand=True))
         self.lbl_clock = lbl("", "aux", xalign=1)
         head.append(self.lbl_clock)
         root.append(head)
@@ -1743,7 +1743,7 @@ def main():
         pass
 
     GLib.set_prgname(APP_ID)
-    GLib.set_application_name("MAGI · CONTROL")
+    GLib.set_application_name("mAGI · CONTROL")
     app = Gtk.Application(flags=Gio.ApplicationFlags.NON_UNIQUE)
     state = {}
 

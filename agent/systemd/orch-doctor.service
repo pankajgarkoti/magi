@@ -1,0 +1,9 @@
+[Unit]
+Description=MAGI orchestrator health check: units, tmux windows, agent browser, browser-bus, ledger
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env orch doctor --quiet
+# exit 1 = problems found and reported on the bus; not a unit failure
+SuccessExitStatus=1

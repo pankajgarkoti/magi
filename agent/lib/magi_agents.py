@@ -27,6 +27,8 @@ Settings, ~/.config/magi/agent.conf (shell syntax):
   AGENT_PROMPT='> '                    custom: its prompt, so a typed draft is never reaped
   AGENT_ARGS='...'                     extra arguments for the orchestrator (any agent)
   NOTIFY=0                             spawn: don't message the orchestrator when a worker finishes
+  BROWSER=0                            no agent browser window and no chrome-devtools MCP entry
+  BUS_DELIVERY=off                     event bus: log only, don't type events into the orchestrator
 
 CLI (used by magi-agent and the setup window):
   magi_agents.py name [orchestrator|agents]     configured adapter name
@@ -40,6 +42,7 @@ CLI (used by magi-agent and the setup window):
   magi_agents.py watch WINDOW                   (started by spawn) message the orchestrator when it finishes/asks
   magi_agents.py wait WINDOW                    block until the agent in WINDOW finishes, asks or exits
   magi_agents.py rows                           one TSV line per agent pane (bar, AGENTS page)
+  magi_agents.py mcp [NAME]                     add the chrome-devtools MCP server (agent browser on :9222)
   magi_agents.py list                           JSON for every agent pane
 """
 import base64
@@ -802,8 +805,13 @@ def watch(window):
     for ev, row in events(window):
         line = event_line(window, ev, row)
         _log(f"{window}: {ev}")
-        if not deliver_to_orchestrator(line):
+        ok = deliver_to_orchestrator(line)
+        if not ok:
             _log(f"{window}: {ev} not delivered (the orchestrator stayed busy or had a draft for 10 min)")
+        # every worker event also lands on the event bus (log only when it was already typed in)
+        bus = which("orch-bus") or str(HERE.parent / "bin/orch-bus")
+        subprocess.run([bus, "emit", f"agent {window}", line.removeprefix("[magi] "), *(["--delivered"] if ok else [])],
+                       capture_output=True, timeout=10)
     return 0
 
 
@@ -811,6 +819,50 @@ def _log(msg):
     STATE.mkdir(parents=True, exist_ok=True)
     with open(STATE / "events.log", "a") as f:
         f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + msg + "\n")
+
+
+# ---------------------------------------------------------------- browser tools for agents
+
+MCP_NAME = "chrome-devtools"
+MCP_ARGV = ["npx", "-y", "chrome-devtools-mcp@latest", "--browserUrl=http://127.0.0.1:9222"]
+
+
+def ensure_mcp(name=None):
+    """Give the agent the chrome-devtools MCP server, attached to the agent browser that
+    chrome-debug runs on 127.0.0.1:9222. Idempotent; leaves an existing entry alone. BROWSER=0 in
+    agent.conf turns this off. Returns a short note of what it did."""
+    if conf().get("BROWSER", "1") == "0":
+        return "browser off"
+    a = get(name)
+    try:
+        if a.name == "claude" and a.installed():
+            try:
+                have = MCP_NAME in json.loads((HOME / ".claude.json").read_text()).get("mcpServers", {})
+            except (OSError, ValueError):
+                have = False
+            if not have:
+                r = subprocess.run([a.path(), "mcp", "add", "-s", "user", MCP_NAME, "--", *MCP_ARGV],
+                                   capture_output=True, text=True, timeout=30)
+                return "added to Claude Code" if r.returncode == 0 else f"claude mcp add failed: {r.stderr.strip()[:200]}"
+        elif a.name == "opencode":
+            f = pathlib.Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "opencode/opencode.json"
+            d = json.loads(f.read_text()) if f.exists() else {"$schema": "https://opencode.ai/config.json"}
+            if MCP_NAME not in d.get("mcp", {}):
+                d.setdefault("mcp", {})[MCP_NAME] = {"type": "local", "command": MCP_ARGV, "enabled": True}
+                f.parent.mkdir(parents=True, exist_ok=True)
+                f.write_text(json.dumps(d, indent=2) + "\n")
+                return f"added to {f}"
+        elif a.name == "codex":
+            f = HOME / ".codex/config.toml"
+            text = f.read_text() if f.exists() else ""
+            if f"[mcp_servers.{MCP_NAME}]" not in text:
+                f.parent.mkdir(parents=True, exist_ok=True)
+                with f.open("a") as fh:
+                    fh.write(f"\n[mcp_servers.{MCP_NAME}]\ncommand = \"{MCP_ARGV[0]}\"\nargs = {json.dumps(MCP_ARGV[1:])}\n")
+                return f"added to {f}"
+    except (OSError, ValueError, subprocess.TimeoutExpired) as e:
+        return f"not configured: {e}"
+    return "already configured"
 
 
 # ---------------------------------------------------------------- CLI
@@ -861,8 +913,13 @@ def main(argv):
         if cmd == "login":
             la = a.login_argv()
             return subprocess.call(la) if la else 0
+    if cmd == "mcp":
+        print(ensure_mcp(rest[0] if rest else None))
+        return 0
     if cmd == "run-orchestrator":
         a = get()
+        for n in {a.name, get(role="agents").name}:  # the orchestrator and the agents it starts
+            ensure_mcp(n)
         resume = flag_value(["x", *rest], "--resume")
         largv, cwd, env = a.launch("orchestrator", resume=resume)
         largv += shlex.split(conf().get("AGENT_ARGS", ""))

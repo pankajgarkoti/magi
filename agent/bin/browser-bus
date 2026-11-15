@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# browser-bus: CDP probes in browser tabs -> orch-bus events. See agent/lib/browser-bus.mjs.
+here=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+exec node "$here/../lib/browser-bus.mjs" "$@"

@@ -1,0 +1,499 @@
+#!/usr/bin/env python3
+"""orch: the orchestrator's ledger and health check.
+
+One SQLite file records what the orchestrator runs and tracks, so a restart, a reboot or a
+compacted context loses nothing:  ~/.local/share/magi/orch.db  (WAL; one backup a day, 14 kept)
+
+Tables
+  agents        agent windows started through `orch spawn`: name, pane, cwd, brief, status, result
+  threads       open threads (work or decisions not yet addressed); the human view is
+                ~/.local/share/magi/threads.md, one checkbox per thread: tick it there to close it
+  watchers      probes, monitors and other standing watches: what, why, until when, last seen working
+  decisions     the user's decisions, so nothing is asked twice
+  deliverables  PRs, deploys, releases, messages sent
+  nudges        timed messages put on the bus (open threads)
+  events        a mirror of the event bus log (~/.local/state/orchestrator/events.jsonl)
+
+Commands (idempotent; none blocks for more than a few seconds)
+  orch init                                  create or upgrade the schema
+  orch spawn NAME DIR BRIEF [--task T] [--agent A]   copy the brief, magi-agent spawn, ledger row
+  orch agent done|lost NAME [--result R]
+  orch agents [--all]                        running agents (or all)
+  orch thread add "line" [details on stdin] | scan | count
+  orch watch add NAME KIND PURPOSE [--cmd C] [--until ISO] | ok NAME | end NAME
+  orch watches
+  orch decide "text" [--context C]           log a decision of the user's
+  orch deliver KIND REF "title" [--url U]    log a PR / deploy / release / message
+  orch sync                                  ingest new bus events, ticked threads, closed windows
+  orch status [--brief]                      one-screen summary
+  orch up                                    start everything: tmux session, core windows, doctor
+  orch doctor [--quiet]                      check every piece, fix what is safe, report the rest on the bus
+  orch nudge-threads                         (orch-open-threads.timer) put the open-thread count on the bus
+"""
+import datetime as dt, hashlib, json, os, pathlib, re, shutil, sqlite3, subprocess, sys, time
+
+HOME = pathlib.Path.home()
+DATA = pathlib.Path(os.environ.get("XDG_DATA_HOME", HOME / ".local/share")) / "magi"
+STATE_HOME = pathlib.Path(os.environ.get("XDG_STATE_HOME", HOME / ".local/state"))
+CONF = pathlib.Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "magi/agent.conf"
+DB = DATA / "orch.db"
+BACKUPS = DATA / "backups"
+BRIEFS = DATA / "briefs"
+THREADS = DATA / "threads.md"
+BUS = STATE_HOME / "orchestrator/events.jsonl"
+BB_STATUS = STATE_HOME / "browser-bus/status.json"
+REAP_LOG = STATE_HOME / "tmux-reap/closed.log"
+SESSION = "magi"
+PORT = int(os.environ.get("MAGI_BROWSER_PORT", 9222))
+HERE = pathlib.Path(os.path.realpath(__file__)).parent
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS agents(
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL, pane TEXT, cwd TEXT, brief_path TEXT, task TEXT, agent TEXT,
+  status TEXT NOT NULL DEFAULT 'running', result TEXT, resume_cmd TEXT,
+  started_at TEXT NOT NULL, ended_at TEXT, updated_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS agents_status ON agents(status, started_at);
+CREATE TABLE IF NOT EXISTS threads(
+  id INTEGER PRIMARY KEY, raised_at TEXT NOT NULL, line TEXT NOT NULL UNIQUE, details TEXT,
+  source TEXT NOT NULL DEFAULT 'orchestrator', status TEXT NOT NULL DEFAULT 'open', resolved_at TEXT);
+CREATE TABLE IF NOT EXISTS watchers(
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, purpose TEXT NOT NULL, cmd TEXT,
+  started_at TEXT NOT NULL, until TEXT, last_ok_at TEXT, status TEXT NOT NULL DEFAULT 'active', ended_at TEXT);
+CREATE TABLE IF NOT EXISTS decisions(id INTEGER PRIMARY KEY, at TEXT NOT NULL, text TEXT NOT NULL, context TEXT);
+CREATE TABLE IF NOT EXISTS deliverables(
+  id INTEGER PRIMARY KEY, at TEXT NOT NULL, kind TEXT NOT NULL, ref TEXT NOT NULL, title TEXT NOT NULL, url TEXT,
+  UNIQUE(kind, ref));
+CREATE TABLE IF NOT EXISTS events(
+  id INTEGER PRIMARY KEY, at REAL, ts TEXT, source TEXT, text TEXT, line_no INTEGER NOT NULL UNIQUE);
+CREATE TABLE IF NOT EXISTS nudges(id INTEGER PRIMARY KEY, at TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
+"""
+
+# What the doctor expects. User units enabled for everyone in the image (systemctl --global):
+ALWAYS_UNITS = ["orch-bus.service", "browser-bus.service", "orch-doctor.timer", "orch-open-threads.timer"]
+# ... and the ones `magi-agent on` enables:
+AGENT_UNITS = ["magi-agents.service", "tmux-snapshot.timer", "tmux-reap-stale.timer"]
+ONESHOT = {"magi-agents.service"}  # run once at login; only check that it is enabled
+SCRIPTS = ["orch-bus", "browser-bus", "chrome-debug", "magi-agent", "tmux-snapshot", "tmux-restore", "tmux-reap-stale"]
+# Core windows of session magi and what runs in them (magi-agent start creates them).
+WINDOWS = {"orchestrator": None, "bus": "orch-bus live", "chrome": "chrome-debug"}
+
+
+def now():
+    return dt.datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def conf():
+    c = {}
+    try:
+        for line in CONF.read_text().splitlines():
+            if "=" in line and not line.lstrip().startswith("#"):
+                k, v = line.split("=", 1)
+                c[k.strip()] = v.strip().strip("'\"")
+    except OSError:
+        pass
+    return c
+
+
+def db():
+    DATA.mkdir(parents=True, exist_ok=True)
+    c = sqlite3.connect(DB, timeout=10)
+    c.row_factory = sqlite3.Row
+    c.execute("PRAGMA journal_mode=WAL")
+    c.execute("PRAGMA busy_timeout=10000")
+    c.executescript(SCHEMA)
+    return c
+
+
+def sh(*a, timeout=10):  # every external call is bounded
+    try:
+        r = subprocess.run(a, capture_output=True, text=True, timeout=timeout)
+        return r.stdout if r.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def tool(name):
+    p = shutil.which(name) or shutil.which(name, path=str(HOME / ".local/bin"))
+    return p or str(HERE / name)
+
+
+def bus(source, text):
+    subprocess.run([tool("orch-bus"), "emit", source, text], capture_output=True, timeout=10)
+
+
+def panes():
+    """window name -> (pane id, window index) for session magi."""
+    out = {}
+    for line in sh("tmux", "list-panes", "-s", "-t", f"={SESSION}", "-F", "#{window_name}\t#{window_index}\t#{pane_id}").splitlines():
+        w, i, p = line.split("\t")
+        out.setdefault(w, (p, int(i)))
+    return out
+
+
+def opt(args, flag, default=None):
+    return args[args.index(flag) + 1] if flag in args and args.index(flag) + 1 < len(args) else default
+
+
+def positional(args, flags=("--task", "--agent", "--result", "--cmd", "--until", "--context", "--url", "--source")):
+    out, skip = [], False
+    for a in args:
+        if skip:
+            skip = False
+        elif a in flags:
+            skip = True
+        else:
+            out.append(a)
+    return out
+
+
+# ---------------------------------------------------------------- agents
+def spawn(args):
+    pos = positional(args)
+    if len(pos) < 3:
+        sys.exit("usage: orch spawn NAME DIR BRIEF [--task T] [--agent A]")
+    name, cwd, brief = pos[0], os.path.abspath(os.path.expanduser(pos[1])), pos[2]
+    day = dt.date.today().isoformat()
+    (BRIEFS / day).mkdir(parents=True, exist_ok=True)
+    dest = BRIEFS / day / f"{name}.md"
+    text = pathlib.Path(os.path.expanduser(brief)).read_text() if os.path.isfile(os.path.expanduser(brief)) else brief
+    dest.write_text(text)
+    if name in panes():
+        sys.exit(f"window {name} already exists in session {SESSION}")
+    cmd = [tool("magi-agent"), "spawn", name, cwd, str(dest)]
+    if opt(args, "--agent"):
+        cmd += ["--agent", opt(args, "--agent")]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    print(r.stdout.strip() or r.stderr.strip())
+    if r.returncode:
+        return r.returncode
+    c = db()
+    c.execute("INSERT INTO agents(name,pane,cwd,brief_path,task,agent,started_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+              (name, panes().get(name, (None,))[0], cwd, str(dest),
+               opt(args, "--task") or (text.strip().splitlines() or [""])[0][:200], opt(args, "--agent"), now(), now()))
+    c.commit()
+    print(f"ledger: {name} recorded, brief {dest}")
+    return 0
+
+
+def agent_set(args):
+    status, name = args[0], args[1]
+    c = db()
+    row = c.execute("SELECT id FROM agents WHERE name=? AND status='running' ORDER BY id DESC LIMIT 1", (name,)).fetchone()
+    if row:
+        c.execute("UPDATE agents SET status=?, result=COALESCE(?,result), ended_at=?, updated_at=? WHERE id=?",
+                  (status, opt(args, "--result"), now(), now(), row["id"]))
+    else:
+        c.execute("INSERT INTO agents(name,status,result,started_at,ended_at,updated_at) VALUES(?,?,?,?,?,?)",
+                  (name, status, opt(args, "--result"), now(), now(), now()))
+    c.commit()
+
+
+def agents_list(args):
+    q = "SELECT * FROM agents" + ("" if "--all" in args else " WHERE status='running'") + " ORDER BY id DESC LIMIT 50"
+    for r in db().execute(q):
+        print(f"{r['started_at'][:16]}  {r['status']:8} {r['name']:18} {r['pane'] or '':5} {(r['task'] or '')[:90]}")
+
+
+# ---------------------------------------------------------------- threads (threads.md is the human view)
+def threads_file():
+    if not THREADS.exists():
+        DATA.mkdir(parents=True, exist_ok=True)
+        THREADS.write_text("# Open threads\n\nWork or decisions the orchestrator has not closed yet. Tick a box ([x]) "
+                           "once it is addressed.\n\n")
+    return THREADS.read_text()
+
+
+def thread_cmd(args):
+    sub = args[0] if args else "scan"
+    if sub == "add":
+        line = " ".join(args[1].split())
+        details = "" if sys.stdin.isatty() else sys.stdin.read()
+        text = threads_file()
+        if f"] {line}" not in text:
+            with THREADS.open("a") as f:
+                f.write(f"- [ ] {dt.datetime.now():%Y-%m-%d %H:%M} · {line}\n")
+                if details.strip():
+                    f.write("".join(f"      {l}\n" for l in details.strip().splitlines()))
+        c = db()
+        c.execute("INSERT OR IGNORE INTO threads(raised_at,line,details,source) VALUES(?,?,?,?)",
+                  (now(), line, details, opt(args, "--source", "orchestrator")))
+        c.commit()
+        print(THREADS)
+        return
+    sync_threads()
+    rows = db().execute("SELECT raised_at,line FROM threads WHERE status='open' ORDER BY id DESC").fetchall()
+    if sub == "count":
+        print(len(rows))
+    else:
+        for r in rows:
+            print(f"{r['raised_at'][:16]}  {r['line']}")
+
+
+def sync_threads():
+    c = db()
+    for ln in threads_file().splitlines():
+        m = re.match(r"- \[( |x|X)\] (?:\d{4}-\d\d-\d\d \d\d:\d\d · )?(.*)", ln)
+        if not m:
+            continue
+        line, ticked = m.group(2).strip(), m.group(1) != " "
+        c.execute("INSERT OR IGNORE INTO threads(raised_at,line,source) VALUES(?,?,'file')", (now(), line))
+        c.execute("UPDATE threads SET status=?, resolved_at=CASE WHEN ? THEN COALESCE(resolved_at,?) ELSE NULL END WHERE line=?",
+                  ("done" if ticked else "open", ticked, now(), line))
+    c.commit()
+
+
+# ---------------------------------------------------------------- watchers / decisions / deliverables
+def watch_cmd(args):
+    c = db()
+    sub = args[0]
+    if sub == "add":
+        p = positional(args[1:])
+        name, kind, purpose = p[0], p[1], p[2]
+        c.execute("INSERT INTO watchers(name,kind,purpose,cmd,started_at,until,last_ok_at,status) VALUES(?,?,?,?,?,?,?,'active') "
+                  "ON CONFLICT(name) DO UPDATE SET kind=excluded.kind, purpose=excluded.purpose, cmd=excluded.cmd, "
+                  "started_at=excluded.started_at, until=excluded.until, status='active', ended_at=NULL",
+                  (name, kind, purpose, opt(args, "--cmd"), now(), opt(args, "--until"), now()))
+    elif sub == "ok":
+        c.execute("UPDATE watchers SET last_ok_at=? WHERE name=?", (now(), args[1]))
+    elif sub == "end":
+        c.execute("UPDATE watchers SET status='ended', ended_at=? WHERE name=?", (now(), args[1]))
+    c.commit()
+
+
+def watches(_):
+    for r in db().execute("SELECT * FROM watchers WHERE status='active' ORDER BY kind, name"):
+        print(f"{r['kind']:10} {r['name']:24} until {r['until'] or '-':20} last ok {(r['last_ok_at'] or '-')[:16]}  {r['purpose'][:80]}")
+
+
+def decide(args):
+    c = db()
+    c.execute("INSERT INTO decisions(at,text,context) VALUES(?,?,?)", (now(), args[0], opt(args, "--context")))
+    c.commit()
+
+
+def deliver(args):
+    c = db()
+    c.execute("INSERT OR REPLACE INTO deliverables(at,kind,ref,title,url) VALUES(?,?,?,?,?)",
+              (now(), args[0], args[1], args[2], opt(args, "--url")))
+    c.commit()
+
+
+# ---------------------------------------------------------------- sync / status
+def sync(_=None):
+    c = db()
+    if BUS.exists():
+        last = int((c.execute("SELECT v FROM meta WHERE k='bus_lines'").fetchone() or {"v": 0})["v"])
+        lines = BUS.read_text(errors="replace").splitlines()
+        if len(lines) < last:  # the log was trimmed: count from its new start
+            last = 0
+        base = int(c.execute("SELECT COALESCE(MAX(line_no),0) m FROM events").fetchone()["m"])
+        for i, ln in enumerate(lines[last:], start=1):
+            try:
+                e = json.loads(ln)
+            except ValueError:
+                continue
+            c.execute("INSERT OR IGNORE INTO events(at,ts,source,text,line_no) VALUES(?,?,?,?,?)",
+                      (e.get("at"), e.get("ts"), e.get("source"), e.get("text"), base + i))
+        c.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('bus_lines',?)", (str(len(lines)),))
+    # reaper log: "<date> <time>  <window>  <agent>  idle <n>m  resume: <command> | can't resume (...)"
+    if REAP_LOG.exists():
+        for ln in REAP_LOG.read_text(errors="replace").splitlines():
+            m = re.match(r"(\S+ \S+)\s+(\S+)\s+\S+\s+idle \d+m\s+(.*)", ln)
+            if not m:
+                continue
+            at, name, resume = m.groups()
+            resume = resume.removeprefix("resume: ")
+            c.execute("UPDATE agents SET status='reaped', resume_cmd=?, ended_at=?, updated_at=? WHERE name=? AND status='running' "
+                      "AND started_at < ?", (resume, at, now(), name, at.replace(" ", "T")))
+    # running agents whose window is gone -> lost, plus an open thread so it is not forgotten
+    live = panes()
+    if live:  # no tmux server at all (early boot) is not evidence that windows were lost
+        for r in c.execute("SELECT id,name,task FROM agents WHERE status='running'").fetchall():
+            if r["name"] not in live:
+                c.execute("UPDATE agents SET status='lost', ended_at=?, updated_at=? WHERE id=?", (now(), now(), r["id"]))
+                c.commit()
+                subprocess.run([sys.executable, __file__, "thread", "add",
+                                f"{r['name']}: window closed while its task was open · {(r['task'] or '')[:120]}"],
+                               input="", text=True, capture_output=True, timeout=20)
+    c.commit()
+    sync_threads()
+
+
+def status(args):
+    sync()
+    c = db()
+    brief = "--brief" in args
+    run = c.execute("SELECT name,pane,task,started_at FROM agents WHERE status='running' ORDER BY id").fetchall()
+    th = c.execute("SELECT raised_at,line FROM threads WHERE status='open' ORDER BY id DESC").fetchall()
+    w = c.execute("SELECT kind,name,purpose,until FROM watchers WHERE status='active' ORDER BY kind,name").fetchall()
+    dec = c.execute("SELECT at,text FROM decisions ORDER BY id DESC LIMIT 8").fetchall()
+    doc = (c.execute("SELECT v FROM meta WHERE k='doctor_last'").fetchone() or {"v": "never"})["v"]
+    out = [f"ORCH STATUS {now()[:16]} · ledger {DB} · doctor {doc}"]
+    out.append(f"Agents running ({len(run)}):")
+    out += [f"  {r['name']} {r['pane'] or ''} since {r['started_at'][11:16]} · {(r['task'] or '')[:100]}" for r in run] or ["  none"]
+    out.append(f"Open threads ({len(th)}):")
+    out += [f"  {r['raised_at'][:10]} · {r['line'][:140]}" for r in th[: (10 if brief else 100)]] or ["  none"]
+    out.append(f"Active watchers ({len(w)}):")
+    out += [f"  {r['kind']} {r['name']} · {r['purpose'][:90]}" + (f" (until {r['until']})" if r['until'] else "") for r in w] or ["  none"]
+    out.append("Recent decisions:")
+    out += [f"  {r['at'][:16]} · {r['text'][:140]}" for r in dec] or ["  none"]
+    print("\n".join(out))
+
+
+# ---------------------------------------------------------------- doctor
+def unit_ok(u):
+    return sh("systemctl", "--user", "is-active", u).strip() == "active"
+
+
+def doctor(args):
+    quiet = "--quiet" in args
+    c_ = conf()
+    agent_on = c_.get("ENABLED") == "1"
+    browser_on = c_.get("BROWSER", "1") != "0"
+    problems, fixed = [], []
+    units = ALWAYS_UNITS + (AGENT_UNITS if agent_on else [])
+    for u in units:
+        if u == "browser-bus.service" and not browser_on:
+            continue
+        if u in ONESHOT:
+            if sh("systemctl", "--user", "is-enabled", u).strip() != "enabled":
+                subprocess.run(["systemctl", "--user", "enable", u], capture_output=True, timeout=15)
+                (fixed if sh("systemctl", "--user", "is-enabled", u).strip() == "enabled" else problems).append(f"unit {u} (enabled)")
+            continue
+        if not unit_ok(u):
+            subprocess.run(["systemctl", "--user", "start", "--no-block", u], capture_output=True, timeout=15)
+            time.sleep(1)
+            (fixed if unit_ok(u) else problems).append(f"unit {u} restarted" if unit_ok(u) else f"unit {u} not running")
+    for s in SCRIPTS:
+        if not os.access(tool(s), os.X_OK):
+            problems.append(f"{s} not found")
+    if agent_on:
+        live = panes()
+        if not live:
+            problems.append(f"tmux session {SESSION} is not running (magi-agent start)")
+        else:
+            for w, prog in WINDOWS.items():
+                if w == "chrome" and not browser_on:
+                    continue
+                if w not in live:
+                    subprocess.run([tool("magi-agent"), "start"], capture_output=True, timeout=60)
+                    (fixed if w in panes() else problems).append(f"window {w} " + ("recreated" if w in panes() else "missing"))
+        if browser_on:
+            if not sh("curl", "-s", "--max-time", "3", f"http://127.0.0.1:{PORT}/json/version"):
+                problems.append(f"agent browser not answering on 127.0.0.1:{PORT} (tmux window 'chrome' runs chrome-debug)")
+            else:
+                try:
+                    st = json.loads(BB_STATUS.read_text())
+                    if not st.get("connected"):
+                        problems.append("browser-bus is not connected to the agent browser")
+                except (OSError, ValueError):
+                    problems.append("browser-bus has written no status yet")
+    if c_.get("VOICE", "1") == "1" and agent_on and "listen" in panes():
+        if "MUTED" in sh("wpctl", "get-volume", "@DEFAULT_AUDIO_SOURCE@"):
+            problems.append("the default microphone is muted, so the listener hears nothing")
+    try:
+        c = db()
+        ok = c.execute("PRAGMA integrity_check").fetchone()[0]
+        if ok != "ok":
+            problems.append(f"ledger integrity: {ok}")
+    except Exception as e:
+        problems.append(f"ledger unusable: {e}")
+    try:
+        BUS.parent.mkdir(parents=True, exist_ok=True)
+        with BUS.open("a"):
+            pass
+    except OSError as e:
+        problems.append(f"bus not writable: {e}")
+    for r in db().execute("SELECT name,until FROM watchers WHERE status='active' AND until IS NOT NULL AND until < ?", (now(),)):
+        problems.append(f"watcher {r['name']} passed its end time {r['until']}: end it or extend it")
+    backup()
+    sync()
+    # Report on the bus only when the set of problems changes, so a lasting problem is said once,
+    # not every 15 minutes.
+    c = db()
+    sig = hashlib.sha1("\n".join(sorted(problems)).encode()).hexdigest()[:12]
+    prev = (c.execute("SELECT v FROM meta WHERE k='doctor_sig'").fetchone() or {"v": ""})["v"]
+    if problems and sig != prev:
+        bus("orch-doctor", "PROBLEMS: " + "; ".join(problems))
+    elif not problems and prev and prev != hashlib.sha1(b"").hexdigest()[:12]:
+        bus("orch-doctor", "all checks pass again")
+    if fixed:
+        bus("orch-doctor", "fixed: " + "; ".join(fixed))
+    c.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('doctor_sig',?)", (sig,))
+    c.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('doctor_last',?)", (now()[:16] + (" OK" if not problems else f" {len(problems)} problems"),))
+    c.commit()
+    if not quiet or problems:
+        print("doctor:", "OK" if not problems else "PROBLEMS:\n  " + "\n  ".join(problems), ("\nfixed: " + ", ".join(fixed)) if fixed else "")
+    return 1 if problems else 0
+
+
+def backup():
+    """One consistent copy per day (sqlite backup API), 14 kept."""
+    BACKUPS.mkdir(parents=True, exist_ok=True)
+    dest = BACKUPS / f"orch-{dt.date.today():%Y%m%d}.db"
+    if not dest.exists():
+        src, dst = db(), sqlite3.connect(dest)
+        src.backup(dst)
+        dst.close()
+    for old in sorted(BACKUPS.glob("orch-*.db"))[:-14]:
+        old.unlink()
+
+
+def up(_):
+    subprocess.run([tool("magi-agent"), "start"], capture_output=True, timeout=120)
+    rc = doctor(["--quiet"])
+    msg = f"orch up: windows {', '.join(panes()) or 'none'}; doctor {'OK' if rc == 0 else 'found problems'}"
+    bus("orch", msg)
+    print(msg)
+
+
+def nudge_threads(_):
+    for f in (REAP_LOG, BUS):  # cap the logs at their last 5000 lines
+        try:
+            lines = f.read_text(errors="replace").splitlines()
+            if len(lines) > 5000:
+                tmp = f.with_suffix(".tmp")
+                tmp.write_text("\n".join(lines[-5000:]) + "\n")
+                os.replace(tmp, f)
+        except OSError:
+            pass
+    sync_threads()
+    n = db().execute("SELECT COUNT(*) n FROM threads WHERE status='open'").fetchone()["n"]
+    if not n:
+        return
+    msg = (f"{n} open thread{'s' if n != 1 else ''} in {THREADS} (orch thread scan). Raise each with the user in plain "
+           f"words; tick it in that file once it is addressed.")
+    bus("open-threads", msg)
+    c = db()
+    c.execute("INSERT INTO nudges(at,kind,text) VALUES(?,?,?)", (now(), "open-threads", msg))
+    c.commit()
+
+
+def init(_):
+    db().commit()
+    threads_file()
+    sync()
+    print(f"ledger ready: {DB}")
+
+
+def main():
+    a = sys.argv[1:]
+    if not a or a[0] in ("-h", "--help", "help"):
+        print(__doc__)
+        return
+    cmd, rest = a[0], a[1:]
+    if cmd == "agent":
+        return agent_set(rest)
+    fn = {"init": init, "spawn": spawn, "agents": agents_list, "thread": thread_cmd, "watch": watch_cmd,
+          "watches": watches, "decide": decide, "deliver": deliver, "sync": sync, "status": status,
+          "doctor": doctor, "up": up, "nudge-threads": nudge_threads}.get(cmd)
+    if not fn:
+        sys.exit(__doc__)
+    r = fn(rest)
+    if isinstance(r, int):
+        sys.exit(r)
+
+
+if __name__ == "__main__":
+    main()

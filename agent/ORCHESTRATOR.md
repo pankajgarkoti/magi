@@ -87,6 +87,66 @@ This works the same for every agent. Before sending, check the target's input bo
 
 Address panes by pane ID (`%3`) or by exact name (`=session:=window`), never by window number: numbers shift when a window closes. For long reports, read the agent's transcript rather than the pane: Claude Code in `~/.claude/projects/<folder>/<session>.jsonl`, Codex in `~/.codex/sessions/`, opencode with `opencode session export <id>`.
 
+## Event bus
+
+`orch-bus` is a one-line event log (`~/.local/state/orchestrator/events.jsonl`) that anything can
+publish to: workers, scripts, timers, browser-bus probes. You don't poll it.
+
+- **Publish:** `orch-bus emit SOURCE "text"` (add `--key K` to drop repeats). Put this line in every
+  brief: `Report results with: orch-bus emit <window> "<result>"`. Long-running scripts you write
+  should emit on change, not on a schedule.
+- **Receive:** with the default `BUS_DELIVERY=idle`, new events are typed into your input as one
+  `[event bus] 14:02 source: text | ...` line, only when you are idle and the input box is empty.
+  These lines come from MAGI, not the user. Act on what needs acting on; the rest is information.
+  With `BUS_DELIVERY=off`, read them between tasks with `orch-bus unread`.
+- `orch-bus tail 30` shows recent raw events. The tmux window `bus` follows the log for the user.
+- Worker `[magi]` lines from `spawn` are logged on the bus too, marked delivered, so they don't
+  arrive twice.
+
+## Ledger and health checks
+
+`orch` keeps a SQLite ledger (`~/.local/share/magi/orch.db`) so a reboot or a compacted context
+loses nothing. Use it as you go:
+
+- `orch spawn NAME DIR BRIEF` instead of `magi-agent spawn` when the work should be tracked: it
+  keeps a copy of the brief and a ledger row. `orch agent done NAME --result "..."` when it is done.
+- `orch thread add "one line"` for anything left open: a decision the user hasn't made, work
+  parked. They appear in `~/.local/share/magi/threads.md`; the user ticks them there.
+- `orch decide "text"` records a decision of the user's, so you never ask it again.
+  `orch deliver KIND REF "title" --url U` records what shipped.
+- `orch status` is the one-screen summary. Read it, and `orch-bus unread`, after any restart.
+- `orch-doctor.timer` runs `orch doctor` every 15 minutes: units, the core tmux windows (`bus`,
+  `chrome`), the agent browser, browser-bus, the ledger. It fixes what is safe and puts the rest on
+  the bus as `orch-doctor: PROBLEMS: ...`, once per change.
+
+## Agent browser and browser-bus
+
+The tmux window `chrome` runs `chrome-debug`: Chromium with its own profile
+(`~/.config/chromium-agent`) and DevTools on `127.0.0.1:9222`. Agents reach it through the
+`chrome-devtools` MCP server (`--browserUrl=http://127.0.0.1:9222`), which MAGI adds to the agent's
+config before it starts (`magi-agent mcp`). It is the user's real browser session for anything
+they sign in to there.
+
+- Open your own tab for each task and close it when done. Never navigate, reload or type into a
+  tab you didn't open: the user may be using it.
+- Never type passwords or one-time codes. When a site needs a sign-in, stop and ask the user to do it.
+- No purchases, posts, messages or form submissions without the user's yes on the exact content.
+
+`browser-bus` runs small read-only scripts ("probes") inside matching tabs and turns what they see
+into bus events, without opening a port of its own. The default probe, `unread-titles`, reports
+when the unread count in a tab title goes up (host and number only).
+
+```bash
+browser-bus status                 # connected?, tabs with probes, recent events
+browser-bus probe examples         # shipped examples
+browser-bus probe add FILE.js      # install a probe (hot-reloaded); registered as a ledger watcher
+browser-bus probe test NAME        # its live status in every matching tab
+```
+
+A probe is a JS file with a `// @match`, `// @source` and `// @purpose` header; the body gets
+`emit({text, key})`, `log()` and `ready(fn)`. Write probes that only read the page. Ask the user
+before adding one for a site with private messages: what a probe emits reaches you, and your provider.
+
 ## Safety rules for you and every agent
 
 - **No keystrokes or compositor commands that could land in a terminal.** `xdotool`, `wtype`, `ydotool`, `hyprctl dispatch sendshortcut`, `swaymsg` key bindings and the like go to whatever window has focus, and that is often a terminal running a shell or an agent. `tmux send-keys` only to a verified pane.
@@ -117,14 +177,11 @@ nohup hud-say "Short update." >/dev/null 2>&1 &
 
 ## Monitoring
 
-Every wake-up re-reads this whole conversation and costs usage. Wake only for real things: permission prompts in agent windows, urgent reports, and an occasional check-in. If your watchers expire, re-arm them only when the user wants one running. When usage runs low, drop standing watchers entirely and close finished agents.
-
-`magi-agent agents` shows which windows are ASKING, for any agent. A loop that wakes on new ones:
-
-```bash
-sig() { magi-agent agents | awk '$2=="ASKING"{print $1, $5}'; }
-prev=$(sig); while true; do sleep 60; cur=$(sig); new=$(comm -13 <(echo "$prev"|sort) <(echo "$cur"|sort)); prev=$cur; [ -n "$new" ] && echo "$new"; done
-```
+Every wake-up re-reads this whole conversation and costs usage. Don't run timers, sleep loops or
+polling watchers in your session. Anything that needs watching publishes to the event bus instead
+(a script that runs `orch-bus emit` on change, a browser-bus probe), and the event reaches you
+when you are idle. `magi-agent agents` shows which windows are ASKING, for any agent; workers
+started with `spawn` report that by themselves.
 
 ## Dashboard
 

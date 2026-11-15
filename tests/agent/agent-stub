@@ -46,6 +46,19 @@ except Exception:
 if a[:1] in (["--version"], ["-v"]):
     print(f"0.0.0 ({KIND}-stub, test only)"); sys.exit(0)
 
+# ------------------------------------------------------------------ MCP config (magi-agent mcp)
+if KIND == "claude" and a[:2] == ["mcp", "add"]:
+    cfg = os.path.join(os.path.expanduser("~"), ".claude.json")
+    try:
+        d = json.load(open(cfg))
+    except (OSError, ValueError):
+        d = {}
+    rest = a[2:]
+    name = [x for x in rest[:rest.index("--")] if not x.startswith("-") and x not in ("user", "project", "local")][0]
+    d.setdefault("mcpServers", {})[name] = {"type": "stdio", "command": rest[rest.index("--") + 1],
+                                            "args": rest[rest.index("--") + 2:]}
+    json.dump(d, open(cfg, "w")); sys.exit(0)
+
 # ------------------------------------------------------------------ sign-in
 if KIND == "claude" and a[:2] == ["auth", "status"]:
     print(json.dumps({"loggedIn": os.path.exists(SIGNED), "authMethod": "stub"})); sys.exit(0)

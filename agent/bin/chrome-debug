@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# chrome-debug: the agent browser. Starts Chromium with a fixed DevTools port on 127.0.0.1, so
+# agents (the chrome-devtools MCP server) and browser-bus can connect without Chromium's
+# "allow remote debugging?" prompt. Chromium accepts the port flag only with a non-default profile
+# folder, so this uses its own profile, ~/.config/chromium-agent. On the first run it is seeded
+# from ~/.config/chromium if that exists (so existing logins carry over), otherwise it starts empty.
+#
+# Security: the port is bound to 127.0.0.1 only, but any program running as you can drive this
+# browser, including every site you are logged in to in it. Keep it to tools you trust.
+#
+#   chrome-debug [CHROMIUM ARGS...]     start it, or say that it is already running
+# Environment: MAGI_BROWSER (binary; default chromium-browser, then chromium, google-chrome),
+#              MAGI_BROWSER_PORT (default 9222), MAGI_BROWSER_PROFILE (default ~/.config/chromium-agent)
+set -euo pipefail
+port=${MAGI_BROWSER_PORT:-9222}
+dir=${MAGI_BROWSER_PROFILE:-$HOME/.config/chromium-agent}
+
+# Started from tmux, systemd or a shell older than the desktop: find the Wayland session
+# (waits up to 60 s at boot, for a tmux window that starts before the compositor).
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+if [ -z "${WAYLAND_DISPLAY:-}" ] && [ -z "${DISPLAY:-}" ]; then
+  sock=
+  for _ in $(seq 60); do
+    sock=$(ls -t "$XDG_RUNTIME_DIR" 2>/dev/null | grep -E '^wayland-[0-9]+$' | head -1 || true)
+    [ -n "$sock" ] && break
+    sleep 1
+  done
+  if [ -n "$sock" ]; then
+    export WAYLAND_DISPLAY=$sock XDG_SESSION_TYPE=wayland
+    hypr=$(ls -t "$XDG_RUNTIME_DIR/hypr" 2>/dev/null | head -1 || true)
+    [ -n "$hypr" ] && export HYPRLAND_INSTANCE_SIGNATURE="${HYPRLAND_INSTANCE_SIGNATURE:-$hypr}"
+  else
+    echo "chrome-debug: no Wayland or X display found after 60 s" >&2
+    exit 1
+  fi
+fi
+
+# One instance: if something already answers on the port, leave it alone.
+if curl -s --max-time 2 "http://127.0.0.1:$port/json/version" >/dev/null; then
+  echo "chrome-debug: already running on 127.0.0.1:$port"
+  exit 0
+fi
+
+bin=${MAGI_BROWSER:-}
+if [ -z "$bin" ]; then
+  for c in chromium-browser chromium google-chrome-stable google-chrome; do
+    command -v "$c" >/dev/null && { bin=$c; break; }
+  done
+fi
+[ -n "$bin" ] || { echo "chrome-debug: no Chromium found (dnf install chromium)" >&2; exit 1; }
+
+if [ ! -d "$dir" ]; then
+  if [ -d "$HOME/.config/chromium" ]; then
+    # copying a profile that is in use gives a broken copy
+    if ! pgrep -u "$(id -u)" -x 'chromium-browse|chromium' >/dev/null; then
+      echo "First run: copying your Chromium profile to $dir"
+      cp -a "$HOME/.config/chromium" "$dir"
+      rm -f "$dir"/Singleton*
+    else
+      echo "chrome-debug: close Chromium once so its profile can be copied, then run chrome-debug again." >&2
+      exit 1
+    fi
+  else
+    mkdir -p "$dir"
+  fi
+fi
+
+exec "$bin" --ozone-platform-hint=auto --remote-debugging-port="$port" --remote-debugging-address=127.0.0.1 \
+  --user-data-dir="$dir" --no-first-run --no-default-browser-check "$@"

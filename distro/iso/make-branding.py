@@ -31,7 +31,7 @@ im.save(os.path.join(pix, "sidebar-bg.png"))
 
 im = Image.new("RGBA", (150, 69), (0, 0, 0, 0))
 d = ImageDraw.Draw(im)
-d.text((4, 2), "MAGI", font=font(44), fill=ORANGE)
+d.text((4, 2), "mAGI", font=font(44), fill=ORANGE)
 d.rectangle([4, 60, 146, 63], fill=RED)
 im.save(os.path.join(pix, "sidebar-logo.png"))
 
@@ -42,7 +42,7 @@ d.rectangle([0, 129, 1039, 131], fill=ORANGE)
 im.save(os.path.join(pix, "topbar-bg.png"))
 
 im = Image.new("RGBA", (119, 36), (0, 0, 0, 0))
-ImageDraw.Draw(im).text((2, 2), "MAGI", font=font(28), fill=ORANGE)
+ImageDraw.Draw(im).text((2, 2), "mAGI", font=font(28), fill=ORANGE)
 im.save(os.path.join(pix, "anaconda_header.png"))
 
 with open(os.path.join(pix, "fedora.css"), "w") as f:

@@ -1,0 +1,13 @@
+[Unit]
+Description=browser-bus: probes in the agent browser's tabs (CDP, 127.0.0.1:9222) -> event bus
+Documentation=https://github.com/pankajgarkoti/magi
+
+[Service]
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env browser-bus daemon
+Restart=always
+RestartSec=5
+Nice=5
+
+[Install]
+WantedBy=default.target

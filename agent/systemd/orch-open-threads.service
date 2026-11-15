@@ -1,0 +1,7 @@
+[Unit]
+Description=Put the number of open orchestrator threads on the event bus; trim the bus and reaper logs
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env orch nudge-threads

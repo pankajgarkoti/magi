@@ -14,7 +14,7 @@ resume), so nothing is lost: ~/.local/state/tmux-reap/closed.log
 
 Usage: tmux-reap-stale [--dry-run]
 Settings (environment): REAP_IDLE_MIN (60), REAP_LOW_MEM_IDLE_MIN (20),
-REAP_LOW_MEM_MB (2500), REAP_EXEMPT (orchestrator,notes,listen,hud-listen).
+REAP_LOW_MEM_MB (2500), REAP_EXEMPT (orchestrator,notes,listen,hud-listen,bus,chrome).
 If an agent update changes what MAGI reads, that agent reads as not idle and nothing closes.
 """
 import os, pathlib, re, shlex, subprocess, sys, time
@@ -26,7 +26,7 @@ IDLE_MIN = int(os.environ.get("REAP_IDLE_MIN", "60"))
 LOW_MEM_IDLE_MIN = int(os.environ.get("REAP_LOW_MEM_IDLE_MIN", "20"))
 LOW_MEM_MB = int(os.environ.get("REAP_LOW_MEM_MB", "2500"))
 # Window names never closed. Comma-separated in REAP_EXEMPT.
-EXEMPT = set(filter(None, os.environ.get("REAP_EXEMPT", "orchestrator,notes,listen,hud-listen").split(",")))
+EXEMPT = set(filter(None, os.environ.get("REAP_EXEMPT", "orchestrator,notes,listen,hud-listen,bus,chrome").split(",")))
 DRY = "--dry-run" in sys.argv
 
 STATE = pathlib.Path.home() / ".local/state/tmux-reap"

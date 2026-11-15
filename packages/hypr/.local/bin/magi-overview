@@ -293,7 +293,7 @@ class Card(Gtk.Box):
 
 class Overview(Gtk.ApplicationWindow):
     def __init__(self, app, css):
-        super().__init__(application=app, title="MAGI · OVERVIEW")
+        super().__init__(application=app, title="mAGI · OVERVIEW")
         self.css = css
         self.add_css_class("ov")
         self.set_default_size(1440, 860)
@@ -313,7 +313,7 @@ class Overview(Gtk.ApplicationWindow):
         self.set_child(root)
         head = Gtk.Box(spacing=8)
         head.add_css_class("header")
-        head.append(lbl("MAGI · OVERVIEW", "title", hexpand=True))
+        head.append(lbl("mAGI · OVERVIEW", "title", hexpand=True))
         self.lbl_head = lbl("", "aux", xalign=1)
         head.append(self.lbl_head)
         root.append(head)
@@ -680,7 +680,7 @@ def main():
     except OSError:
         pass
     GLib.set_prgname(APP_ID)
-    GLib.set_application_name("MAGI · OVERVIEW")
+    GLib.set_application_name("mAGI · OVERVIEW")
     app = Gtk.Application(flags=Gio.ApplicationFlags.NON_UNIQUE)
     state = {}
 

@@ -100,8 +100,8 @@
     "on-click-middle": "magi agents"
   },
   "custom/magi": {
-    "format": "MAGI",
-    "tooltip-format": "MAGI CONTROL · left-click: open panel · right-click: NERV / UNIT-01",
+    "format": "mAGI",
+    "tooltip-format": "mAGI CONTROL · left-click: open panel · right-click: NERV / UNIT-01",
     "on-click": "magi",
     "on-click-right": "eva-theme toggle"
   }

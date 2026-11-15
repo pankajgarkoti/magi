@@ -59,6 +59,11 @@ daemons are running. It prints the PATH GDM gave Hyprland.
    `test-agent.sh offline`. `test-agent.sh reset` clears the agent layer, then repeat with
    `AGENT=opencode` (or `codex`). The stub stands in for each agent; nothing needs an account.
 
+Event bus, agent browser and browser-bus: copy `tests/vm/test-bus.sh` to the VM too and run it
+after `test-agent.sh setup` (units, the `bus` and `chrome` windows, the loopback-only debug port,
+the MCP entry, bus delivery into the orchestrator, a probe event from a real page, doctor,
+latencies and memory), and `test-bus.sh reboot` after a reboot.
+
 Without a VM, `tests/agent/test-adapters.sh` runs the same adapter checks (install, sign-in,
 states, spawn, snapshot/restore, reaper) for all four adapters in a throwaway HOME, and
 `tests/agent/test-opencode-real.sh` / `test-codex-real.sh` run the real binaries headless

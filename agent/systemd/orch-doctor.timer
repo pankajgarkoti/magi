@@ -1,0 +1,9 @@
+[Unit]
+Description=MAGI orchestrator health check every 15 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=15min
+
+[Install]
+WantedBy=timers.target

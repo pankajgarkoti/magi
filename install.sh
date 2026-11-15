@@ -39,6 +39,9 @@ PKGS=(
   nautilus ffmpegthumbnailer file-roller ranger file poppler-utils bat jq
   # terminal
   alacritty tmux
+  # agent browser and the event bus: Chromium (chrome-debug), Node.js for browser-bus and the
+  # chrome-devtools MCP server (npx), sqlite for the orchestrator ledger
+  chromium nodejs22 nodejs22-npm sqlite
   # settings, session plumbing, installer needs
   gnome-control-center xdg-utils xdg-user-dirs dbus-tools dbus-daemon procps-ng hostname
   ncurses stow git-core curl tar xz

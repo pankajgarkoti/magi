@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""orch-bus: the MAGI event bus. Any process publishes a one-line event; the orchestrator reads
+them between tasks, or gets them typed into its input when it is idle. Events are appended to
+~/.local/state/orchestrator/events.jsonl, one JSON object per line. Nothing listens on a port.
+
+  orch-bus emit SOURCE TEXT [--key KEY]   publish (KEY dedupes: an already-seen key is dropped)
+  orch-bus tail [N]                       the last N events, raw JSON
+  orch-bus unread                         events since the last `unread`, then mark them read
+  orch-bus live                           follow the log, formatted (tmux window "bus")
+  orch-bus dispatch                       delivery loop (orch-bus.service): when the orchestrator
+                                          is idle and its input box is empty, type everything
+                                          that piled up as one "[event bus] ..." line
+
+Delivery is set in ~/.config/magi/agent.conf: BUS_DELIVERY=idle (default) or off (events are
+only logged; the orchestrator reads them with `orch-bus unread`).
+"""
+import json, os, pathlib, sys, time
+
+HOME = pathlib.Path.home()
+DIR = pathlib.Path(os.environ.get("XDG_STATE_HOME", HOME / ".local/state")) / "orchestrator"
+BUS = DIR / "events.jsonl"
+OFFSET = DIR / "dispatch.offset"
+READ = DIR / "read.offset"
+SEEN = DIR / "seen-keys"
+TEXT_MAX = 300
+
+
+def emit(source, text, key=None, delivered=False):
+    DIR.mkdir(parents=True, exist_ok=True)
+    if key:
+        seen = set(SEEN.read_text().split("\n")) if SEEN.exists() else set()
+        if key in seen:
+            return False
+        with SEEN.open("a") as f:
+            f.write(key + "\n")
+    t = time.time()
+    ev = {"ts": time.strftime("%H:%M", time.localtime(t)), "at": round(t, 3), "source": source,
+          "text": " ".join(text.split())[:TEXT_MAX]}
+    if delivered:  # already typed into the orchestrator by its publisher (spawn's worker watch)
+        ev["delivered"] = True
+    with BUS.open("a") as f:
+        f.write(json.dumps(ev) + "\n")
+    return True
+
+
+def fmt(e):
+    return f"{e.get('ts', '--:--')} {e.get('source', '?')}: {e.get('text', '')}"
+
+
+def parse(lines):
+    out = []
+    for l in lines:
+        try:
+            out.append(json.loads(l))
+        except ValueError:
+            pass
+    return out
+
+
+def conf_value(key, default):
+    try:
+        for line in (pathlib.Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "magi/agent.conf").read_text().splitlines():
+            if line.startswith(key + "="):
+                return line.split("=", 1)[1].strip().strip("'\"")
+    except OSError:
+        pass
+    return default
+
+
+def dispatch():
+    """Deliver batched events to the orchestrator through MAGI's agent adapters, so the idle
+    check and the "never type over a draft" check work for every supported agent."""
+    here = pathlib.Path(os.path.realpath(__file__)).parent
+    sys.path.insert(0, str(here.parent / "lib"))
+    import magi_agents
+    DIR.mkdir(parents=True, exist_ok=True)
+    BUS.touch()
+    if not OFFSET.exists():
+        OFFSET.write_text(str(BUS.stat().st_size))
+    while True:
+        try:
+            off = int(OFFSET.read_text() or 0)
+            size = BUS.stat().st_size
+            if size < off:  # log was trimmed
+                off = 0
+            if size > off and conf_value("BUS_DELIVERY", "idle") != "off":
+                time.sleep(3)  # let a burst coalesce into one line
+                with BUS.open("rb") as f:
+                    f.seek(off)
+                    chunk = f.read()
+                events = [e for e in parse(chunk.decode(errors="replace").splitlines()) if not e.get("delivered")]
+                if events:
+                    msg = "[event bus] " + " | ".join(fmt(e) for e in events)
+                    if len(msg) > 1500:
+                        msg = msg[:1450] + f" ... (+more: orch-bus tail {len(events)})"
+                    if not magi_agents.deliver_to_orchestrator(msg, wait=30):
+                        time.sleep(5)
+                        continue  # orchestrator busy, absent or holding a draft: keep the events
+                OFFSET.write_text(str(off + len(chunk)))
+            elif size > off:
+                OFFSET.write_text(str(size))
+        except Exception as e:  # never die: systemd would restart us, but keep the log readable
+            print("dispatch error:", e, file=sys.stderr, flush=True)
+        time.sleep(2)
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__)
+        return 0
+    cmd = argv[0]
+    if cmd == "emit":
+        key, delivered = None, "--delivered" in argv
+        argv = [a for a in argv if a != "--delivered"]
+        if "--key" in argv:
+            i = argv.index("--key")
+            key = argv[i + 1]
+            argv = argv[:i] + argv[i + 2:]
+        if len(argv) < 3:
+            print("usage: orch-bus emit SOURCE TEXT [--key KEY]", file=sys.stderr)
+            return 2
+        emit(argv[1], " ".join(argv[2:]), key, delivered=delivered)
+    elif cmd == "dispatch":
+        dispatch()
+    elif cmd == "unread":
+        off = int(READ.read_text() or 0) if READ.exists() else 0
+        data = BUS.read_bytes() if BUS.exists() else b""
+        if len(data) < off:
+            off = 0
+        new = parse(data[off:].decode(errors="replace").splitlines())
+        for e in new:
+            print(fmt(e))
+        if not new:
+            print("(no new events)")
+        DIR.mkdir(parents=True, exist_ok=True)
+        READ.write_text(str(len(data)))
+    elif cmd == "live":
+        DIR.mkdir(parents=True, exist_ok=True)
+        BUS.touch()
+        with BUS.open() as f:
+            for e in parse(f.readlines()[-15:]):
+                print(fmt(e), flush=True)
+            while True:
+                l = f.readline()
+                if not l:
+                    time.sleep(1)
+                    continue
+                for e in parse([l]):
+                    print(fmt(e), flush=True)
+    elif cmd == "tail":
+        n = int(argv[1]) if len(argv) > 1 else 20
+        for l in (BUS.read_text().splitlines() if BUS.exists() else [])[-n:]:
+            print(l)
+    else:
+        print(__doc__, file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

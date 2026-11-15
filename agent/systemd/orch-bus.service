@@ -1,0 +1,14 @@
+[Unit]
+Description=MAGI event bus: type new events into the orchestrator when it is idle (BUS_DELIVERY in ~/.config/magi/agent.conf)
+Documentation=https://github.com/pankajgarkoti/magi
+After=magi-agents.service
+
+[Service]
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env orch-bus dispatch
+Restart=always
+RestartSec=5
+Nice=5
+
+[Install]
+WantedBy=default.target

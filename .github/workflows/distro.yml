@@ -49,7 +49,8 @@ jobs:
           podman run --rm localhost/magi:latest sh -euc '
             grep "^PRETTY_NAME=" /usr/lib/os-release
             if rpm -q fedora-logos; then echo fedora-logos present; exit 1; fi
-            for t in eva-wifi magi magi-overview wall-next magi-agent magi-listen hud-say; do command -v "$t"; done
+            for t in eva-wifi magi magi-overview wall-next magi-agent magi-listen hud-say orch orch-bus browser-bus chrome-debug chromium-browser node npx; do command -v "$t"; done
+            systemctl --global is-enabled orch-bus.service browser-bus.service orch-doctor.timer orch-open-threads.timer
             Hyprland --version | head -1
             test -f /usr/lib/magi/voice/models/whisper-base.en/model.bin
             test -f /usr/lib/magi/voice/voices/en_US-ljspeech-medium.onnx

@@ -18,7 +18,7 @@ w=$(( $(tput cols 2>/dev/null || echo 80) < 72 ? $(tput cols 2>/dev/null || echo
 line=$(printf '━%.0s' $(seq 1 $w))
 echo
 printf "%s%s%s\n" "$(c $acc)" "$line" "$R"
-printf "  %s%sMAGI%s  %s%s%s\n" "$(c $acc)" "$B" "$R" "$(c $dim)" "$(date '+%a %d %b · %H:%M')  ·  $(hostname -s)" "$R"
+printf "  %s%smAGI%s  %s%s%s\n" "$(c $acc)" "$B" "$R" "$(c $dim)" "$(date '+%a %d %b · %H:%M')  ·  $(hostname -s)" "$R"
 printf "%s%s%s\n" "$(c $acc)" "$line" "$R"
 row() { printf "  %s%-13s%s %s%-34s%s %s\n" "$(c $acc2)" "$1" "$R" "$(c $dim)" "$2" "$R" "$(verdict "$3")"; }
 if command -v magi-agent >/dev/null; then

@@ -60,13 +60,13 @@ podman build -q -t localhost/magi-isotools -f "$repo/distro/iso/Containerfile.to
 say "assembling the ISO (mkksiso)"
 podman run --rm --security-opt label=disable -v "$WORK:/w" -v "$BOOT_ISO:/boot.iso:ro" localhost/magi-isotools bash -euc '
 python3 /w/make-branding.py /w/product /usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono-Bold.ttf
-printf "[Main]\nProduct=MAGI\nVersion='"$FEDORA"'\nBugURL=https://github.com/pankajgarkoti/magi/issues\nIsFinal=True\nUUID=$(date +%Y%m%d%H%M).x86_64\nVariant=\n" > /w/product/.buildstamp
+printf "[Main]\nProduct=mAGI\nVersion='"$FEDORA"'\nBugURL=https://github.com/pankajgarkoti/magi/issues\nIsFinal=True\nUUID=$(date +%Y%m%d%H%M).x86_64\nVariant=\n" > /w/product/.buildstamp
 (cd /w/product && find . | cpio --quiet -o -H newc | gzip -9) > /w/root/images/product.img
 mkksiso --ks /w/ks.cfg -a /w/root/magi -a /w/root/images -V MAGI-'"$FEDORA"' \
-  -R "Install Fedora '"$FEDORA"'" "Install MAGI '"$FEDORA"'" \
-  -R "Test this media & install Fedora '"$FEDORA"'" "Test this media & install MAGI '"$FEDORA"'" \
-  -R "Fedora '"$FEDORA"' in basic graphics mode" "MAGI '"$FEDORA"' in basic graphics mode" \
-  -R "Rescue a Fedora system" "Rescue a MAGI system" \
+  -R "Install Fedora '"$FEDORA"'" "Install mAGI '"$FEDORA"'" \
+  -R "Test this media & install Fedora '"$FEDORA"'" "Test this media & install mAGI '"$FEDORA"'" \
+  -R "Fedora '"$FEDORA"' in basic graphics mode" "mAGI '"$FEDORA"' in basic graphics mode" \
+  -R "Rescue a Fedora system" "Rescue a mAGI system" \
   --skip-mkefiboot --no-md5sum --tmp /w /boot.iso /w/stage.iso
 # The UEFI boot image is an appended FAT partition. mkksiso rebuilds it with a loop device,
 # which a rootless container lacks, so patch its grub.cfg with mtools instead.
