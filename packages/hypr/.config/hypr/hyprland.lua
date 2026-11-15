@@ -237,6 +237,8 @@ hl.window_rule({ name = "float-settings", match = { class = "^(org.gnome.Setting
 hl.window_rule({ name = "eva-pickers", match = { class = "^(eva-wifi|eva-bluetooth)$" }, float = true, pin = true, size = "520 600", move = "monitor_w-526 32", border_size = 0, no_anim = true, no_shadow = true })
 -- MAGI control centre centred; overview a large centred panel
 hl.window_rule({ name = "magi", match = { class = "^magi$" }, float = true, pin = true, center = true, size = "880 600", border_size = 0, no_anim = true })
+-- the agent browser (chrome-debug): its own workspace, opened silently, never in the console scratchpad
+hl.window_rule({ name = "magi-agent-browser", match = { class = "^magi-agent-browser$" }, workspace = "9 silent" })
 hl.window_rule({ name = "magi-pilot-setup", match = { class = "^(magi-pilot-setup|magi\\.pilot\\.setup)$" }, float = true, center = true, size = "760 560", border_size = 0, no_anim = true })
 hl.window_rule({ name = "magi-overview", match = { class = "^magi-overview$" }, float = true, pin = true, center = true, size = "monitor_w*0.8 monitor_h*0.84", border_size = 0, no_anim = true })
 -- ranger (SUPER+R, magi TOOLS): a floating, centred terminal file manager

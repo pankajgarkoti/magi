@@ -380,11 +380,30 @@ def doctor(args):
                     subprocess.run([tool("magi-agent"), "start"], capture_output=True, timeout=60)
                     (fixed if w in panes() else problems).append(f"window {w} " + ("recreated" if w in panes() else "missing"))
         if browser_on:
-            if not sh("curl", "-s", "--max-time", "3", f"http://127.0.0.1:{PORT}/json/version"):
+            up = lambda: sh("curl", "-s", "--max-time", "3", f"http://127.0.0.1:{PORT}/json/version")
+            pane = panes().get("chrome", (None,))[0]
+            if not up() and pane:
+                # chrome-debug gave up (no display yet at boot, or Chromium was closed): the window is a
+                # bare shell now. Start it again in the same window.
+                cur = sh("tmux", "display-message", "-p", "-t", pane, "#{pane_current_command}").strip()
+                if cur in ("bash", "zsh", "sh", "fish", ""):
+                    subprocess.run(["tmux", "respawn-pane", "-k", "-t", pane, "chrome-debug; exec bash"], capture_output=True, timeout=10)
+                    for _ in range(15):
+                        if up():
+                            break
+                        time.sleep(1)
+                    if up():
+                        fixed.append("agent browser restarted in window chrome")
+            if not up():
                 problems.append(f"agent browser not answering on 127.0.0.1:{PORT} (tmux window 'chrome' runs chrome-debug)")
             else:
                 try:
                     st = json.loads(BB_STATUS.read_text())
+                    for _ in range(35 if not st.get("connected") else 0):  # it reconnects within 30 s
+                        time.sleep(1)
+                        st = json.loads(BB_STATUS.read_text())
+                        if st.get("connected"):
+                            break
                     if not st.get("connected"):
                         problems.append("browser-bus is not connected to the agent browser")
                 except (OSError, ValueError):

@@ -16,7 +16,8 @@ systemctl --user daemon-reload 2>/dev/null || true
 # the event bus, browser-bus and the health checks run whether or not the orchestrator is on
 systemctl --user enable --now orch-bus.service browser-bus.service orch-doctor.timer orch-open-threads.timer 2>/dev/null || true
 probes=${XDG_CONFIG_HOME:-$HOME/.config}/browser-bus/probes
-[ -d "$probes" ] || { mkdir -p "$probes"; cp "$here/browser-bus/examples/unread-titles.js" "$probes/"; }
+seeded=${XDG_STATE_HOME:-$HOME/.local/state}/magi/probes-seeded
+[ -e "$seeded" ] || { mkdir -p "$probes" "${seeded%/*}"; cp -n "$here/browser-bus/examples/unread-titles.js" "$probes/"; touch "$seeded"; }
 "$here/bin/orch" init >/dev/null 2>&1 || true
 echo "linked $(ls "$here/bin" | wc -l) tools and $(ls "$here/systemd" | wc -l) user units"
 if [ "$voice" = 1 ]; then

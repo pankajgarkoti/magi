@@ -152,7 +152,7 @@ if [ -z "${MAGI_REEXEC:-}" ] && [ "$ONLY_WALLS" = 0 ]; then
 printf '%s' "$B$C"
 cat <<'EOF'
  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   MAGI · installer
+   mAGI · installer
    Evangelion-themed Hyprland for Fedora
  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 EOF

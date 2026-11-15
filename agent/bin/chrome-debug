@@ -5,10 +5,11 @@
 # folder, so this uses its own profile, ~/.config/chromium-agent. On the first run it is seeded
 # from ~/.config/chromium if that exists (so existing logins carry over), otherwise it starts empty.
 #
-# Security: the port is bound to 127.0.0.1 only, but any program running as you can drive this
-# browser, including every site you are logged in to in it. Keep it to tools you trust.
+# Security: the port is bound to 127.0.0.1 only, so the network can't reach it, but any program
+# on this machine can drive this browser, including every site you are signed in to in it.
 #
 #   chrome-debug [CHROMIUM ARGS...]     start it, or say that it is already running
+# The window class is magi-agent-browser; mAGI's Hyprland config puts it on workspace 9.
 # Environment: MAGI_BROWSER (binary; default chromium-browser, then chromium, google-chrome),
 #              MAGI_BROWSER_PORT (default 9222), MAGI_BROWSER_PROFILE (default ~/.config/chromium-agent)
 set -euo pipefail
@@ -66,4 +67,4 @@ if [ ! -d "$dir" ]; then
 fi
 
 exec "$bin" --ozone-platform-hint=auto --remote-debugging-port="$port" --remote-debugging-address=127.0.0.1 \
-  --user-data-dir="$dir" --no-first-run --no-default-browser-check "$@"
+  --user-data-dir="$dir" --class=magi-agent-browser --no-first-run --no-default-browser-check "$@"

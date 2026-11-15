@@ -57,8 +57,8 @@ check "chrome-devtools MCP server in the agent's config (~/.claude.json)" \
 orch-bus unread >/dev/null
 orch-bus emit test-bus "round trip $$"
 check "orch-bus emit -> unread" bash -c "orch-bus unread | grep -q 'test-bus: round trip $$'"
-orch-bus emit test-bus "dedupe" --key "k$$"; orch-bus emit test-bus "dedupe" --key "k$$"
-check "orch-bus --key drops the repeat" bash -c "[ \$(grep -c '\"dedupe\"' ~/.local/state/orchestrator/events.jsonl) = 1 ]"
+orch-bus emit test-bus "dedupe $$" --key "k$$"; orch-bus emit test-bus "dedupe $$" --key "k$$"
+check "orch-bus --key drops the repeat" bash -c "[ \$(grep -c 'dedupe $$' ~/.local/state/orchestrator/events.jsonl) = 1 ]"
 
 # ---- delivery into the idle orchestrator (the stub logs every line it receives)
 LOG=$(ls -t ~/.magi-stub/*.log 2>/dev/null | head -1)
@@ -87,15 +87,17 @@ EOF
 srv=$!
 sleep 2
 tab=$(curl -s -X PUT "http://127.0.0.1:9222/json/new?http://127.0.0.1:8765/index.html" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
-if waitfor 30 grep -q '"source": "page-title"' ~/.local/state/orchestrator/events.jsonl; then
+since=$(date +%s)
+newev() { python3 -c "import json,os,sys; sys.exit(0 if any(json.loads(l).get('at',0)>=$since for l in open(os.path.expanduser('~/.local/state/orchestrator/events.jsonl')) if '\"page-title\"' in l) else 1)"; }
+if waitfor 30 newev; then
   pass "browser-bus: page-title probe event on the bus: $(grep '"source": "page-title"' ~/.local/state/orchestrator/events.jsonl | tail -1 | cut -c1-120)"
 else
   fail "browser-bus: no page-title event"; browser-bus status | head -20
 fi
 sleep 20
 python3 - <<'PY'
-import json, os, re
-ev = [json.loads(l) for l in open(os.path.expanduser("~/.local/state/orchestrator/events.jsonl")) if '"page-title"' in l]
+import json, os, re, time
+ev = [e for e in (json.loads(l) for l in open(os.path.expanduser("~/.local/state/orchestrator/events.jsonl")) if '"page-title"' in l) if e["at"] > time.time() - 60]
 d = [round(e["at"] - int(m.group(1)) / 1000, 3) for e in ev if (m := re.search(r"t=(\d+)", e["text"]))]
 d = sorted(d)
 if d:

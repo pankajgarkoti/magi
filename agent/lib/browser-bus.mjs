@@ -233,7 +233,7 @@ class Daemon {
       }
       log("retry in", delay / 1000, "s:", err);
       await sleep(delay);
-      delay = Math.min(delay * 2, ep && ep.mode === "autoconnect" ? 600_000 : 120_000);
+      delay = Math.min(delay * 2, ep && ep.mode === "autoconnect" ? 600_000 : 30_000); // port mode: one loopback request per try
     }
   }
 
@@ -281,6 +281,18 @@ class Daemon {
       case "Runtime.executionContextsCleared": {
         const t = this.targets.get(this.sessions.get(m.sessionId));
         if (t) t.ctx = null;
+        return;
+      }
+      case "Page.loadEventFired": {
+        // A tab created and navigated at once can load its page between the probe's first
+        // evaluation (still about:blank -> "skip") and the on-new-document hook. Re-running the
+        // probe after each load closes that gap; it is a no-op where the probe already runs.
+        const t = this.targets.get(this.sessions.get(m.sessionId));
+        if (!t) return;
+        for (const name of t.probes.keys()) {
+          const pr = this.probes.get(name);
+          if (pr) await this.evalWorld(t, wrap(pr)).then((r) => r === "started" && log("injected", name, "into", t.info.url, "after load")).catch(() => {});
+        }
         return;
       }
       case "Runtime.bindingCalled":
