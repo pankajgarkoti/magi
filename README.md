@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/logo/logo-colour.svg">
+  <img alt="mAGI" src="docs/logo/logo-colour-light.svg" width="272">
+</picture>
+
 # mAGI
 
 mAGI is a Fedora/Hyprland setup built around LLM agents. The main interface is an agent
@@ -102,7 +107,8 @@ the rest on the bus, once per change.
 profile (`~/.config/chromium-agent`, seeded once from `~/.config/chromium` if you have one) and
 DevTools on `127.0.0.1:9222`. It waits for the Wayland session when tmux starts before the
 desktop, won't start a second copy, and comes back after a reboot with the rest of the tmux
-layout. Before the orchestrator starts, `magi-agent mcp` adds the
+layout. Its window opens on workspace 9 (class `magi-agent-browser`), out of the way.
+Before the orchestrator starts, `magi-agent mcp` adds the
 [chrome-devtools MCP server](https://github.com/ChromeDevTools/chrome-devtools-mcp)
 (`npx -y chrome-devtools-mcp@latest --browserUrl=http://127.0.0.1:9222`) to the agent's own config
 (Claude Code, opencode or Codex), so agents drive this browser, where you are signed in, rather
@@ -144,6 +150,11 @@ machine, sign in to only what you want agents to use, and turn it off with `BROW
 `~/.config/magi/agent.conf` (then close the `chrome` window). Text that probes emit goes to your
 orchestrator agent and its provider.
 
+With automatic login the GNOME keyring stays locked, and Chromium waits on a keyring password
+prompt before it loads pages; a normal password login unlocks the keyring and there is no
+prompt. `chrome-debug --password-store=basic` avoids the keyring at the cost of weaker
+encryption of saved passwords and cookies on disk.
+
 ## The desktop
 
 ![The mAGI control centre in the NERV theme, open on its THEME page](docs/screenshots/hero-nerv.png)
@@ -157,11 +168,12 @@ you can log out and pick GNOME again.
 ## Get it
 
 **Install from the ISO (new machine or VM).** Download
-[magi-44-x86_64.iso](https://archive.org/download/magi-44-x86_64/magi-44-x86_64.iso) (4.8 GB,
-hosted on the Internet Archive) and write it to a USB stick or boot it in a VM.
+[magi-0.2.0-x86_64.iso](https://archive.org/download/magi-0.2.0-x86_64/magi-0.2.0-x86_64.iso)
+(5.0 GB, hosted on the Internet Archive; [release notes](https://github.com/pankajgarkoti/magi/releases/tag/v0.2.0))
+and write it to a USB stick or boot it in a VM.
 
 ```
-sha256  cf30def4367d2395558349c4becd1c6e29806f5f5b968bbaf01c664bb5e20ebb
+sha256  5cfcb11e9d966faced14359d467607a4330a88017038778177cf67cd4c0b89f5
 ```
 
 The ISO is Fedora's netinstall boot media plus the mAGI image (installed offline from the ISO)
