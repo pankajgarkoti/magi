@@ -206,12 +206,12 @@ you can log out and pick GNOME again.
 ## Get it
 
 **Install from the ISO (new machine or VM).** Download
-[magi-0.2.0-x86_64.iso](https://archive.org/download/magi-0.2.0-x86_64/magi-0.2.0-x86_64.iso)
-(5.0 GB, hosted on the Internet Archive; [release notes](https://github.com/pankajgarkoti/magi/releases/tag/v0.2.0))
+[magi-0.3.0-x86_64.iso](https://archive.org/download/magi-0.3.0-x86_64/magi-0.3.0-x86_64.iso)
+(5.0 GB, hosted on the Internet Archive; [release notes](https://github.com/pankajgarkoti/magi/releases/tag/v0.3.0))
 and write it to a USB stick or boot it in a VM.
 
 ```
-sha256  5cfcb11e9d966faced14359d467607a4330a88017038778177cf67cd4c0b89f5
+sha256  0f0def504219e549c5a2d5ca8bc01cd466b607ce1306929aeff19a512dbf78c3
 ```
 
 The ISO is Fedora's netinstall boot media plus the mAGI image (installed offline from the ISO)
