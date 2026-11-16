@@ -10,6 +10,7 @@
 //   browser-bus probe examples         the example probes that ship with MAGI
 //   browser-bus probe rm NAME          remove it (+ end its ledger watch)
 //   browser-bus probe test NAME        ask the daemon for the probe's live status in every matching tab
+//   browser-bus send-self "[orch] …"   type one "[orch] …" message into the WhatsApp self-chat (orch-bus alerts)
 //
 // Probe = ~/.config/browser-bus/probes/NAME.js with a header:
 //   // @match   https://example.com/*        glob, or /regex/
@@ -50,11 +51,29 @@ const RATE_BURST = 30, RATE_REFILL_MS = 4000; // per probe: 30 at once, then 15/
 const WARN_AFTER_MS = 60_000;
 
 const log = (...a) => console.log(new Date().toTimeString().slice(0, 8), ...a);
+// The daemon's own notices (WARN, reconnected): internal events.
 const bus = (source, text, key) => {
   const args = ["emit", source, text];
   if (key) args.push("--key", key);
   const r = spawnSync(ORCH_BUS, args, { timeout: 10_000 });
   if (r.status !== 0) log("orch-bus emit failed", r.status, String(r.stderr || "").slice(0, 200));
+};
+// Probe events: text written by other people. Sent with the probe token (only browser-bus may use
+// wa-*/tg-* sources) and the FULL text on stdin, so orch-bus's guard scans everything before it caps,
+// frames and, if needed, quarantines it. Returns the stored event (trust, risk, framed text).
+let PROBE_TOKEN = null;
+const probeToken = () => {
+  if (PROBE_TOKEN) return PROBE_TOKEN;
+  const r = spawnSync(ORCH_BUS, ["token"], { timeout: 10_000 });
+  try { PROBE_TOKEN = fs.readFileSync(String(r.stdout).trim(), "utf8").trim(); } catch { PROBE_TOKEN = null; }
+  return PROBE_TOKEN;
+};
+const probeBus = (source, text, key) => {
+  const args = ["emit", source, "--stdin", "--probe", "--json"];
+  if (key) args.push("--key", key);
+  const r = spawnSync(ORCH_BUS, args, { input: text, timeout: 20_000, env: { ...process.env, ORCH_BUS_PROBE_TOKEN: probeToken() || "" } });
+  if (r.status !== 0) log("orch-bus emit failed", r.status, String(r.stderr || "").slice(0, 200));
+  try { return JSON.parse(String(r.stdout).trim().split("\n").pop()); } catch { return null; }
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -208,6 +227,7 @@ class Daemon {
   async run() {
     fs.mkdirSync(CTL, { recursive: true });
     fs.mkdirSync(CONF, { recursive: true });
+    if (!probeToken()) log("WARN no orch-bus probe token; probe events will be marked unverified");
     this.watchProbes();
     this.watchCtl();
     let delay = 5000, downSince = Date.now(), warned = false;
@@ -399,9 +419,10 @@ class Daemon {
       return;
     }
     b.tokens -= 1;
-    const short = text.length > BUS_TEXT ? text.slice(0, BUS_TEXT - 1) + "…" : text;
-    bus(source, short, key);
-    const rec = { at: new Date().toISOString(), probe: p.name, source, text, key, url: t.info.url, data: o.data ?? null };
+    const ev = probeBus(source, text.slice(0, MAX_PAYLOAD), key);
+    const short = ev?.text || (text.length > BUS_TEXT ? text.slice(0, BUS_TEXT - 1) + "…" : text);
+    // the sidecar keeps the raw text for debugging; it is untrusted data (never feed it to an LLM bare)
+    const rec = { at: new Date().toISOString(), probe: p.name, source, text, key, url: t.info.url, trust: ev?.trust, risk: ev?.risk, reasons: ev?.reasons, qid: ev?.qid, data: o.data ?? null };
     fs.appendFileSync(SIDECAR, JSON.stringify(rec) + "\n");
     this.recent.push({ at: rec.at, source, text: short });
     if (this.recent.length > 50) this.recent.shift();
@@ -412,6 +433,53 @@ class Daemon {
       spawnSync(ORCH, ["watch", "ok", `probe:${p.name}`], { timeout: 10_000 });
     }
     this.writeStatus();
+  }
+
+  // Type one "[orch] …" line into the WhatsApp self-chat ("Message yourself" row) and send it.
+  // Used by orch-bus for SECURITY alerts, so it must not depend on the bus. Checks the open chat is
+  // the self-chat right before typing and again right before Enter; never touches another chat's box.
+  async sendSelf(text) {
+    text = String(text || "").replace(/\s+/g, " ").trim().slice(0, 700);
+    if (!text.startsWith("[orch] ")) return { ok: false, error: "only '[orch] …' messages may be sent" };
+    if (!this.cdp) return { ok: false, error: "not connected to Chrome" };
+    const t = [...this.targets.values()].find((x) => /^https:\/\/web\.whatsapp\.com\//.test(x.info.url));
+    if (!t) return { ok: false, error: "no WhatsApp Web tab" };
+    if (!t.sessionId) {
+      const { sessionId } = await this.cdp.send("Target.attachToTarget", { targetId: t.info.targetId, flatten: true });
+      t.sessionId = sessionId; this.sessions.set(sessionId, t.info.targetId);
+    }
+    const s = t.sessionId;
+    const ev = async (expr) => (await this.cdp.send("Runtime.evaluate", { expression: expr, returnByValue: true }, s)).result.value;
+    const isSelf = `(() => { const h = document.querySelector('#main header'); if (!h) return false;
+      const sel = document.querySelector('#pane-side [data-testid="message-yourself-row"]');
+      const title = sel && sel.closest('[role="row"]')?.querySelector('[title]')?.getAttribute('title');
+      const ht = h.innerText || ''; return /\\(You\\)|Message yourself/.test(ht) || (!!title && ht.split(/\\n/).some((l) => l.trim() === title)); })()`;
+    if (!(await ev(isSelf))) {
+      const pos = await ev(`(() => { const sel = document.querySelector('#pane-side [data-testid="message-yourself-row"]');
+        const row = sel && sel.closest('[role="row"]'); if (!row) return null; row.scrollIntoView({ block: 'center' });
+        const r = row.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+      if (!pos) return { ok: false, error: "self-chat row not in the chat list" };
+      for (const type of ["mouseMoved", "mousePressed", "mouseReleased"])
+        await this.cdp.send("Input.dispatchMouseEvent", { type, x: pos.x, y: pos.y, button: "left", clickCount: 1 }, s);
+      for (let i = 0; i < 60 && !(await ev(isSelf)); i++) await sleep(250);
+      if (!(await ev(isSelf))) return { ok: false, error: "could not open the self-chat" };
+    }
+    const box = `document.querySelector('#main footer [contenteditable="true"]')`;
+    const draft = await ev(`(() => { const b = ${box}; if (!b) return null; b.focus(); return (b.innerText || '').trim(); })()`);
+    if (draft === null) return { ok: false, error: "no message box in the self-chat" };
+    if (draft) return { ok: false, error: "the self-chat has an unsent draft; not typing over it" };
+    await this.cdp.send("Input.insertText", { text }, s);
+    await sleep(300);
+    const typed = await ev(`(${box}?.innerText || '').trim()`);
+    if (!(await ev(isSelf)) || typed.replace(/\s+/g, " ") !== text) {
+      await ev(`(() => { const b = ${box}; if (b) { b.focus(); document.execCommand('selectAll'); document.execCommand('delete'); } })()`);
+      return { ok: false, error: "open chat changed or text mismatch before send; cleared" };
+    }
+    for (const type of ["keyDown", "keyUp"])
+      await this.cdp.send("Input.dispatchKeyEvent", { type, key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, ...(type === "keyDown" ? { text: "\r" } : {}) }, s);
+    await sleep(800);
+    const left = await ev(`(${box}?.innerText || '').trim()`);
+    return left ? { ok: false, error: "Enter did not send (text still in the box)" } : { ok: true };
   }
 
   watchProbes() {
@@ -433,6 +501,7 @@ class Daemon {
       let req;
       try { req = JSON.parse(fs.readFileSync(full, "utf8")); fs.unlinkSync(full); } catch { return; }
       const out = { tabs: [] };
+      if (req.cmd === "send-self") Object.assign(out, await this.sendSelf(req.text).catch((e) => ({ ok: false, error: e.message })));
       if (req.cmd === "test") {
         for (const t of this.targets.values()) {
           if (!t.probes.has(req.name)) continue;
@@ -513,6 +582,23 @@ async function main() {
     spawnSync(ORCH, ["watch", "end", `probe:${name}`], { timeout: 10_000 });
     console.log(`removed ${name}`);
     return;
+  }
+  if (cmd === "send-self") {
+    const text = [sub, ...rest].join(" ");
+    if (!daemonAlive(readStatus())) throw new Error("daemon not running (systemctl --user status browser-bus)");
+    const id = crypto.randomBytes(4).toString("hex");
+    fs.mkdirSync(CTL, { recursive: true });
+    fs.writeFileSync(path.join(CTL, `req-${id}.json`), JSON.stringify({ cmd: "send-self", text }));
+    const res = path.join(CTL, `res-${id}.json`);
+    for (let i = 0; i < 600; i++) {
+      if (fs.existsSync(res)) {
+        const r = JSON.parse(fs.readFileSync(res, "utf8")); fs.unlinkSync(res);
+        console.log(new Date().toISOString(), "send-self", r.ok ? "sent" : `FAILED: ${r.error}`);
+        process.exit(r.ok ? 0 : 1);
+      }
+      await sleep(100);
+    }
+    throw new Error("daemon did not answer in 60 s");
   }
   if (cmd === "probe" && sub === "test") {
     const [name] = rest;
