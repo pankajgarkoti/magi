@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+"""magi-status-show (ALT + M): show the status panel right away.
+
+The panel runs in the tmux window "magi-status". If that window doesn't exist it is created: in
+the session that holds the orchestrator (session magi), else session main, else the first one.
+The window is selected, and the terminal attached to its session is focused and raised (its
+special workspace is shown if it is hidden there). With no terminal on that session, a new one
+opens attached to it.
+"""
+import json, os, subprocess, sys
+
+WIN = "magi-status"
+os.environ["PATH"] = os.path.expanduser("~/.local/bin") + ":/usr/local/bin:/usr/bin:/bin:" + os.environ.get("PATH", "")
+if "UTF-8" not in (os.environ.get("LC_ALL") or os.environ.get("LC_CTYPE") or os.environ.get("LANG") or ""):
+    os.environ["LC_ALL"] = "C.UTF-8"  # tmux refuses to start without a UTF-8 locale
+
+
+def run(*a):
+    try:
+        return subprocess.run(a, capture_output=True, text=True, timeout=5).stdout.strip()
+    except Exception:
+        return ""
+
+
+def hypr(expr):
+    run("hyprctl", "dispatch", expr)
+
+
+def find_window():
+    for l in run("tmux", "list-windows", "-a", "-F", "#{session_name}\t#{window_id}\t#{window_name}").splitlines():
+        s, wid, name = l.split("\t")
+        if name == WIN:
+            return s, wid
+    return None, None
+
+
+def create_window():
+    rows = [l.split("\t") for l in run("tmux", "list-windows", "-a", "-F", "#{session_name}\t#{window_name}").splitlines()]
+    sessions = [r[0] for r in rows]
+    sess = next((r[0] for r in rows if r[1] == "orchestrator"), None) or ("main" if "main" in sessions else sessions[0] if sessions else None)
+    if sess is None:
+        sess = "main"
+        run("tmux", "new-session", "-d", "-s", sess, "-n", WIN, "magi-status")
+    else:
+        run("tmux", "new-window", "-d", "-t", f"={sess}:", "-n", WIN, "magi-status")
+    run("tmux", "set-option", "-w", "-t", f"={sess}:={WIN}", "automatic-rename", "off")
+    return find_window()
+
+
+def ancestors(pid):
+    out = []
+    while pid > 1 and len(out) < 12:
+        out.append(pid)
+        try:
+            pid = int(open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()[1])
+        except Exception:
+            break
+    return out
+
+
+def main():
+    sess, wid = find_window()
+    if not wid:
+        sess, wid = create_window()
+    if not wid:
+        print("magi-status-show: tmux is not available", file=sys.stderr)
+        return 1
+    run("tmux", "select-window", "-t", wid)
+    try:
+        clients = json.loads(run("hyprctl", "clients", "-j") or "[]")
+    except ValueError:
+        clients = []
+    by_pid = {c.get("pid"): c for c in clients}
+    for cp in run("tmux", "list-clients", "-t", f"={sess}", "-F", "#{client_pid}").split():
+        c = next((by_pid[p] for p in ancestors(int(cp)) if p in by_pid), None)
+        if not c:
+            continue
+        ws = c.get("workspace", {}).get("name", "")
+        if ws.startswith("special:"):
+            try:
+                shown = {m.get("specialWorkspace", {}).get("name") for m in json.loads(run("hyprctl", "monitors", "-j") or "[]")}
+            except ValueError:
+                shown = set()
+            if ws not in shown:
+                hypr('hl.dsp.workspace.toggle_special("%s")' % ws.split(":", 1)[1])
+        hypr('hl.dsp.focus({ window = "address:%s" })' % c["address"])
+        hypr('hl.dsp.window.alter_zorder({ mode = "top", window = "address:%s" })' % c["address"])
+        return 0
+    subprocess.Popen(["alacritty", "-e", "tmux", "attach", "-t", f"={sess}"], start_new_session=True,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

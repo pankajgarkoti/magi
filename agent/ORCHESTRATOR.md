@@ -120,13 +120,18 @@ loses nothing. Use it as you go:
 - `orch thread add "one line"` for anything left open: a decision the user hasn't made, work
   parked. It goes under `## Open threads` in today's note (details from stdin go to a sidecar
   file linked from the line). The user ticks the box there to close it; `orch thread scan` lists
-  what is still open from the last 30 days, and every 3 hours the count arrives on the bus.
+  what is still open from the last 30 days. When the idle reaper closes an agent window, it adds
+  a thread with the resume command and the last screen. Every 3 hours an `[open-threads]` reminder
+  arrives on the bus: run `orch thread scan`, raise each open thread with the user in plain words,
+  and tick it once it is decided or done. `orch-thread` is the same command.
 - `orch decide "text"` records a decision of the user's, so you never ask it again.
   `orch deliver KIND REF "title" --url U` records what shipped. Both are logged in today's note.
 - The voice digest (every 3 hours) turns what the listener heard into `- [ ]` action items under
   `## From voice (HH:MM–HH:MM)` in today's note, using the configured agent non-interactively.
   Raise them with the user like open threads.
 - `orch status` is the one-screen summary. Read it, and `orch-bus unread`, after any restart.
+- `magi-status --once` prints the whole system's state (units, windows, bus, browser, notes,
+  memory, disk). The user sees the same panel with ALT + M (tmux window `magi-status`).
 - `orch-doctor.timer` runs `orch doctor` every 15 minutes: units, the core tmux windows (`bus`,
   `chrome`), the agent browser, browser-bus, the ledger, the notes repo and the links from
   `~/notes/orchestrator/system`. It fixes what is safe, commits the notes, and puts the rest on the

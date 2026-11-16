@@ -3,7 +3,7 @@
 ConditionUser=!@system
 ConditionUser=!gdm-greeter
 ConditionUser=!gdm
-Description=Put the number of open orchestrator threads on the event bus; trim the bus and reaper logs
+Description=Remind the orchestrator of every open thread in the daily notes; trim the bus and reaper logs
 
 [Service]
 Type=oneshot

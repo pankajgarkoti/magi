@@ -10,7 +10,9 @@ command; see agent/lib/magi_agents.py). A session is closed only when ALL of the
   - its pane shows no question, menu or permission prompt waiting on the user
   - its input box holds no typed draft (for agents whose prompt MAGI can read)
 Every close is logged with the resume command (or "starts fresh" for agents that can't
-resume), so nothing is lost: ~/.local/state/tmux-reap/closed.log
+resume), so nothing is lost: ~/.local/state/tmux-reap/closed.log. Each close also becomes an
+open thread in today's daily note (`orch thread add`, with the last screen as details), so the
+orchestrator raises it with the user at the next open-threads reminder until the box is ticked.
 
 Usage: tmux-reap-stale [--dry-run]
 Settings (environment): REAP_IDLE_MIN (60), REAP_LOW_MEM_IDLE_MIN (20),
@@ -65,6 +67,17 @@ def main():
         if DRY:
             print("would close", line)
             continue
+        screen = [l.rstrip() for l in magi_agents.screen_tail(pane).splitlines()
+                  if l.strip() and not set(l.strip()) <= set("─━-")][-12:]
+        try:
+            subprocess.run(["orch", "thread", "add",
+                            f"{win} ({a.label}) was closed after {r['idle_min']}m idle · "
+                            + (how.replace("resume: ", "resume with `") + "`" if cmd else how),
+                            "--source", "reaper"],
+                           input="last screen:\n```\n" + "\n".join(screen) + "\n```\n",
+                           text=True, capture_output=True, timeout=20)
+        except Exception:
+            pass
         panes = sh("tmux", "list-panes", "-t", pane, "-F", "#{pane_id}").split()
         if len(panes) <= 1:
             sh("tmux", "kill-window", "-t", pane)

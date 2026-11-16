@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# orch-thread: open threads, kept in the daily notes. Same as `orch thread`:
+#   orch-thread add "<one line>" [--details-file F | details on stdin]   unticked box under "## Open threads" in today's note
+#   orch-thread scan                                                      unticked threads of the last 30 days, newest first
+#   orch-thread count                                                     how many
+# Tick the box in the daily note once the thread is addressed.
+set -euo pipefail
+if [ "${1:-}" = add ]; then
+  args=()
+  details=
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --details-file) details=$2; shift 2 ;;
+      --days) shift 2 ;;
+      *) args+=("$1"); shift ;;
+    esac
+  done
+  if [ -n "$details" ]; then exec orch thread add "${args[@]}" < "$details"; fi
+  exec orch thread add "${args[@]}"
+fi
+[ $# -gt 0 ] || { sed -n '2,6p' "$0" | cut -c3-; exit 0; }
+sub=$1; shift
+exec orch thread "$sub"

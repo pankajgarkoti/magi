@@ -1,0 +1,483 @@
+#!/usr/bin/env python3
+"""magi-status: a live panel with the state of every part of mAGI on this computer.
+It runs in the tmux window `magi-status`; ALT + M shows it (magi-status-show).
+
+Read-only: it never starts, stops, enables or edits anything. No network except 127.0.0.1 (the
+agent browser's DevTools port). Every external command has a short timeout, and one failing check
+never stops the panel.
+
+  magi-status            refresh every 15 s (MAGI_STATUS_INTERVAL to change)
+  magi-status --once     print one frame and exit
+  magi-status --no-color
+
+Statuses: OK, WARN, DOWN, MUTED (you turned it off), OFF (not in use), INFO.
+"""
+import datetime as dt, json, os, pathlib, re, shutil, sqlite3, subprocess, sys, textwrap, time, urllib.request
+
+HOME = pathlib.Path.home()
+CONF_HOME = pathlib.Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config"))
+STATE_HOME = pathlib.Path(os.environ.get("XDG_STATE_HOME", HOME / ".local/state"))
+RUN = pathlib.Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+AGENT_CONF = CONF_HOME / "magi/agent.conf"
+COLOR = ("--no-color" not in sys.argv and sys.stdout.isatty()) or "--color" in sys.argv
+INTERVAL = int(os.environ.get("MAGI_STATUS_INTERVAL", "15"))
+SLOW_EVERY = 300  # rpm-ostree / rpm / git facts: refreshed every 5 min
+_slow = {"at": 0}
+C = {"OK": "32", "WARN": "33", "DOWN": "31;1", "MUTED": "36", "OFF": "90", "INFO": "37"}
+
+
+def sh(*a, timeout=4, cwd=None):
+    try:
+        return subprocess.run(a, capture_output=True, text=True, timeout=timeout, cwd=cwd).stdout.strip()
+    except Exception:
+        return ""
+
+
+def ago(ts):
+    s = max(0, int(time.time() - ts))
+    if s < 90:
+        return f"{s}s ago"
+    if s < 5400:
+        return f"{s // 60}m ago"
+    if s < 172800:
+        return f"{s // 3600}h ago"
+    return f"{s // 86400}d ago"
+
+
+def conf():
+    c = {"ENABLED": "0", "VOICE": "1", "BUS_DELIVERY": "idle", "NOTES_DIR": "~/notes"}
+    try:
+        for line in AGENT_CONF.read_text().splitlines():
+            if "=" in line and not line.lstrip().startswith("#"):
+                k, v = line.split("=", 1)
+                c[k.strip()] = v.strip().strip("'\"")
+    except OSError:
+        pass
+    return c
+
+
+def notes_dir(c):
+    return pathlib.Path(os.path.expanduser(os.environ.get("ORCH_NOTES") or c["NOTES_DIR"]))
+
+
+def magi_root():
+    """Where the mAGI tree lives: the image's /usr/share/magi, or the install.sh checkout."""
+    if pathlib.Path("/usr/share/magi/IMAGE_VERSION").exists():
+        return pathlib.Path("/usr/share/magi"), "image"
+    try:  # install.sh stows packages/hypr into ~: follow the link back to the checkout
+        real = (HOME / ".config/hypr/hyprland.lua").resolve()
+        root = real.parents[3]
+        if (root / "install.sh").exists():
+            return root, "install.sh"
+    except Exception:
+        pass
+    return None, "none"
+
+
+# ---------------------------------------------------------------- systemd (one call for every unit)
+def unit_names(root):
+    names = set()
+    dirs = [CONF_HOME / "systemd/user"] + ([root / "agent/systemd"] if root else [])
+    for d in dirs:
+        if d.is_dir():
+            names |= {p.name for p in d.iterdir() if re.fullmatch(r"[\w.@-]+\.(service|timer)", p.name)}
+    return sorted(names)
+
+
+def units_info(names):
+    if not names:
+        return {}
+    props = "Id,ActiveState,SubState,UnitFileState,Result,LastTriggerUSec"
+    out = sh("systemctl", "--user", "show", "-p", props, "--timestamp=unix", *names, timeout=6)
+    info, cur = {}, {}
+    for line in out.splitlines() + [""]:
+        if not line.strip():
+            if cur.get("Id"):
+                info[cur["Id"]] = cur
+            cur = {}
+            continue
+        k, _, v = line.partition("=")
+        cur[k] = v
+    return info
+
+
+def ts_of(v):
+    m = re.match(r"@(\d+)", v or "")
+    return float(m.group(1)) if m else 0
+
+
+# ---------------------------------------------------------------- slow facts (cached)
+def slow_facts(root, mode):
+    if time.time() - _slow["at"] < SLOW_EVERY:
+        return _slow
+    f = {"at": time.time(), "root": root, "mode": mode}
+    os_rel = {}
+    for p in ("/etc/os-release", "/usr/lib/os-release"):
+        try:
+            for line in pathlib.Path(p).read_text().splitlines():
+                k, _, v = line.partition("=")
+                os_rel[k] = v.strip('"')
+            break
+        except OSError:
+            continue
+    f["os"] = os_rel
+    f["atomic"] = bool(shutil.which("rpm-ostree"))
+    f["ostree_json"] = sh("rpm-ostree", "status", "--json", timeout=8) if f["atomic"] else ""
+    f["kernels"] = sorted(sh("rpm", "-q", "--qf", "%{VERSION}-%{RELEASE}.%{ARCH}\n", "kernel-core").split(),
+                          key=lambda s: [int(x) if x.isdigit() else x for x in re.split(r"[.-]", s)])
+    pk = sh("rpm", "-q", "--qf", "%{NAME} %{VERSION}\n", "hyprland", "alacritty", "tmux")
+    f["pkgs"] = dict(l.split(" ", 1) for l in pk.splitlines() if " " in l and "not installed" not in l)
+    if mode == "image":
+        f["version"] = (root / "IMAGE_VERSION").read_text().strip()
+    elif mode == "install.sh":
+        f["version"] = sh("git", "describe", "--tags", "--always", "--dirty", cwd=root) or "checkout"
+    else:
+        f["version"] = ""
+    _slow.clear()
+    _slow.update(f)
+    return _slow
+
+
+# ---------------------------------------------------------------- rows
+rows = []  # (section, status, name, detail)
+
+
+def row(status, name, detail):
+    rows.append((None, status, name, detail))
+
+
+def sect(title):
+    rows.append((title, None, None, None))
+
+
+def timer_row(info, timer, label, extra="", muted=False):
+    t = info.get(timer)
+    if not t or t.get("UnitFileState") in ("", "not-found"):
+        return
+    res = info.get(timer.replace(".timer", ".service"), {}).get("Result", "")
+    last = ago(ts_of(t.get("LastTriggerUSec"))) if ts_of(t.get("LastTriggerUSec")) else "never"
+    if muted:
+        st = "MUTED"
+    elif t.get("ActiveState") != "active":
+        st = "OFF" if t.get("UnitFileState") == "disabled" else "DOWN"
+    elif res not in ("success", ""):
+        st = "WARN"
+    else:
+        st = "OK"
+    row(st, label, f"timer {t.get('ActiveState')} · last run {last}" + (f" · result {res}" if res not in ("success", "") else "")
+        + (f" · {extra}" if extra else ""))
+
+
+def tail(path, n=1):
+    try:
+        return path.read_text(errors="replace").splitlines()[-n:]
+    except Exception:
+        return []
+
+
+def system(f):
+    sect("SYSTEM")
+    o = f["os"]
+    if f["mode"] == "image":
+        row("OK", "mAGI", f"{f['version']} (image) · {o.get('PRETTY_NAME', '?')}")
+    elif f["mode"] == "install.sh":
+        row("INFO", "mAGI", f"{f['version']} (install.sh checkout {f['root']}) · {o.get('PRETTY_NAME', '?')}")
+    else:
+        row("WARN", "mAGI", f"no mAGI tree found · {o.get('PRETTY_NAME', '?')}")
+    if f["atomic"]:
+        try:
+            dep = json.loads(f["ostree_json"]).get("deployments", [])
+            b = next((d for d in dep if d.get("booted")), {})
+            staged = any(d.get("staged") for d in dep)
+            ref = b.get("container-image-reference") or b.get("origin") or "?"
+            row("WARN" if staged else "OK", "deployment",
+                f"{ref} · {'update STAGED, reboot to use it' if staged else 'no staged update'} · rollback {'yes' if len(dep) > 1 else 'no'}")
+        except Exception:
+            row("WARN", "deployment", "rpm-ostree status unreadable")
+    run = os.uname().release
+    newest = f["kernels"][-1] if f["kernels"] else run
+    row("WARN" if newest != run else "OK", "kernel", run + (f" · newer {newest} installed, reboot to use it" if newest != run else ""))
+    up = float(pathlib.Path("/proc/uptime").read_text().split()[0])
+    la = os.getloadavg()
+    row("OK", "uptime", f"{int(up // 86400)}d {int(up % 86400 // 3600)}h {int(up % 3600 // 60)}m · load {la[0]:.1f} {la[1]:.1f} {la[2]:.1f} ({os.cpu_count()} cpu)")
+
+
+def orchestration(c, info):
+    sect("ORCHESTRATOR")
+    raw = sh("tmux", "list-windows", "-a", "-F", "#{session_name}\t#{window_index}\t#{window_name}")
+    if not raw:
+        row("DOWN", "tmux", "no tmux server")
+    else:
+        wins = [l.split("\t") for l in raw.splitlines()]
+        sess = sorted({w[0] for w in wins})
+        names = {w[2] for w in wins}
+        core = ["orchestrator", "bus", "chrome"] if c["ENABLED"] == "1" else []
+        missing = [w for w in core if w not in names]
+        row("WARN" if missing else "OK", "tmux", f"sessions {', '.join(sess)} · {len(wins)} windows"
+            + (f" · missing {', '.join(missing)}" if missing else ""))
+    js = sh("magi-agent", "status", "--json", timeout=6)
+    try:
+        s = json.loads(js)
+    except Exception:
+        row("OFF" if not shutil.which("magi-agent") else "WARN", "agent", "magi-agent not installed" if not shutil.which("magi-agent") else "magi-agent status unreadable")
+        return
+    if not s.get("enabled"):
+        row("OFF", "orchestrator", f"off (magi-agent on to start it at every login) · agent {s.get('agent', '?')}")
+    else:
+        o = s.get("orchestrator", "?")
+        st = "OK" if o in ("IDLE", "WORKING", "STARTING") else "WARN" if o in ("ASKING", "SIGN-IN", "OFFLINE", "SETUP") else "DOWN"
+        row(st, "orchestrator", f"{o.lower()} · {s.get('agent', '?')} · window 1 of tmux session magi")
+    others = [w for w in s.get("windows", []) if w.get("name") != "orchestrator"]
+    asking = [w["name"] for w in others if w.get("state") == "asking"]
+    row("WARN" if asking else "OK", "agents", f"{len(others)} agent window(s)"
+        + (": " + ", ".join(f"{w['name']} ({w.get('state', '?')})" for w in others[:8]) if others else "")
+        + (f" · waiting on you: {', '.join(asking)}" if asking else ""))
+    lis = s.get("listener", "?")
+    row("MUTED" if lis == "MUTED" else "OK" if lis == "LISTEN" else "OFF" if not s.get("enabled") else "DOWN",
+        "listener", {"MUTED": "muted (SUPER + SHIFT + M turns it on)", "LISTEN": "listening (local, nothing leaves the computer)"}.get(lis, lis.lower()))
+
+
+def ledger(c, info):
+    db = notes_dir(c) / "orchestrator/orch.db"
+    if not db.exists():
+        row("OFF", "ledger", f"none yet ({db})")
+        return
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=3)
+        q = lambda s: con.execute(s).fetchone()
+        ok = q("PRAGMA quick_check")[0]
+        ag = q("SELECT count(*) FROM agents WHERE status='running'")[0]
+        th = q("SELECT count(*) FROM threads WHERE status='open'")[0]
+        wa = q("SELECT count(*) FROM watchers WHERE status='active'")[0]
+        doc = (q("SELECT v FROM meta WHERE k='doctor_last'") or ("never",))[0]
+        con.close()
+    except Exception as e:
+        row("DOWN", "ledger", f"unreadable: {str(e)[:60]}")
+        return
+    row("OK" if ok == "ok" else "DOWN", "ledger", f"{'integrity ok' if ok == 'ok' else ok} · {ag} agents running · {th} open threads · {wa} watchers")
+    t = info.get("orch-doctor.timer", {})
+    m = re.match(r"(\S+)\s+(.*)", doc)
+    when, res = (m.group(1), m.group(2)) if m else ("", doc)
+    try:
+        when = ago(dt.datetime.fromisoformat(when).timestamp())
+    except Exception:
+        pass
+    st = "DOWN" if t.get("ActiveState") != "active" else "WARN" if "problem" in res.lower() else "OK"
+    row(st, "doctor", f"timer {t.get('ActiveState', 'missing')} · last run {when}: {res[:80]}")
+
+
+def bus(c, info):
+    s = info.get("orch-bus.service", {})
+    ev = STATE_HOME / "orchestrator/events.jsonl"
+    last = ago(ev.stat().st_mtime) if ev.exists() else "nothing logged yet"
+    up = s.get("ActiveState") == "active"
+    deliv = c["BUS_DELIVERY"]
+    row("OK" if up or deliv == "off" else "DOWN", "event bus",
+        f"delivery {deliv} · service {s.get('SubState', 'missing')} · last event {last}")
+    s = info.get("browser-bus.service", {})
+    try:
+        bs = json.loads((STATE_HOME / "browser-bus/status.json").read_text())
+    except Exception:
+        bs = {}
+    up = s.get("ActiveState") == "active"
+    probes = bs.get("probes", [])
+    row("DOWN" if not up else "OK" if bs.get("connected") else "WARN", "browser-bus",
+        f"service {s.get('SubState', 'missing')} · {'connected' if bs.get('connected') else 'not connected'} · probes "
+        + (", ".join(p.get("name", "?") for p in probes) or "none") + f" · {len(bs.get('tabs', []))} tab(s) watched")
+    try:
+        v = json.loads(urllib.request.urlopen("http://127.0.0.1:9222/json/version", timeout=2).read())
+        pages = json.loads(urllib.request.urlopen("http://127.0.0.1:9222/json/list", timeout=2).read())
+        row("OK", "agent browser", f"{v.get('Browser', '?')} on 127.0.0.1:9222 · {sum(p.get('type') == 'page' for p in pages)} page(s)")
+    except Exception:
+        row("DOWN" if c.get("BROWSER", "1") == "1" else "OFF", "agent browser", "127.0.0.1:9222 not answering (tmux window 'chrome' runs chrome-debug)")
+
+
+def housekeeping(c, info):
+    sect("NOTES AND HOUSEKEEPING")
+    snap = STATE_HOME / "tmux-snapshot/layout.json"
+    timer_row(info, "tmux-snapshot.timer", "tmux-snapshot", f"layout saved {ago(snap.stat().st_mtime) if snap.exists() else 'never'}")
+    r = info.get("tmux-restore.service", {})
+    flag = RUN / "tmux-restored"
+    if r:
+        row("OK" if r.get("UnitFileState") == "enabled" else "WARN", "tmux-restore",
+            f"{r.get('UnitFileState', 'missing')} · this boot: {'restored' if flag.exists() else r.get('ActiveState', '?')}")
+    rl = tail(STATE_HOME / "tmux-reap/closed.log")
+    timer_row(info, "tmux-reap-stale.timer", "idle reaper", ("last closed " + " ".join(rl[0].split()[:3])) if rl else "nothing closed")
+    timer_row(info, "orch-open-threads.timer", "open threads")
+    timer_row(info, "voice-digest.timer", "voice digest", muted=c["VOICE"] != "1")
+    nd = notes_dir(c)
+    if (nd / ".git").exists():
+        g = lambda *a: sh("git", *a, cwd=nd)
+        dirty = len([l for l in g("status", "--porcelain").splitlines() if l.strip()])
+        lc = g("log", "-1", "--format=%ct")
+        today = nd / f"Journal/{dt.date.today():%Y/%m/%Y-%m-%d}.md"
+        open_today = sum(1 for l in today.read_text().splitlines() if l.startswith("- [ ]")) if today.exists() else 0
+        row("OK", "notes", f"{nd} · {dirty} uncommitted · last commit {ago(int(lc)) if lc else 'none'} · {open_today} open box(es) today")
+    else:
+        row("OFF", "notes", f"{nd} is not set up yet (orch init)")
+
+
+def desktop(info):
+    sect("DESKTOP AND RESOURCES")
+    f = _slow
+    hy = sh("pgrep", "-x", "Hyprland")
+    row("OK" if hy else "DOWN", "hyprland", (f"running · v{f['pkgs'].get('hyprland', '?')}" if hy else "not running")
+        + f" · alacritty x{len(sh('pgrep', '-x', 'alacritty').split())} · tmux {f['pkgs'].get('tmux', '?')}")
+    bats = sorted(pathlib.Path("/sys/class/power_supply").glob("BAT*"))
+    if bats:
+        cap = int((bats[0] / "capacity").read_text().strip())
+        stt = (bats[0] / "status").read_text().strip()
+        row("WARN" if cap < 20 and stt != "Charging" else "OK", "battery", f"{cap}% {stt.lower()}")
+    m = {}
+    for l in pathlib.Path("/proc/meminfo").read_text().splitlines():
+        k, v = l.split(":")
+        m[k] = int(v.split()[0])
+    avail = m["MemAvailable"] / m["MemTotal"]
+    swu = 1 - m["SwapFree"] / m["SwapTotal"] if m.get("SwapTotal") else 0
+    try:
+        psi = re.search(r"avg60=([\d.]+)", pathlib.Path("/proc/pressure/memory").read_text())
+        p60 = float(psi.group(1)) if psi else 0
+    except OSError:
+        p60 = 0
+    st = "DOWN" if avail < 0.05 else "WARN" if avail < 0.15 or swu > 0.8 or p60 > 10 else "OK"
+    row(st, "memory", f"{m['MemAvailable'] / 1048576:.1f}/{m['MemTotal'] / 1048576:.0f} GB free · swap {swu:.0%} used · pressure {p60:.1f}%")
+    parts, seen, worst = [], set(), 0
+    for mp in ("/", "/var", "/home"):
+        try:
+            d = shutil.disk_usage(mp)
+        except Exception:
+            continue
+        if (d.total, d.used) in seen:
+            continue
+        seen.add((d.total, d.used))
+        u = d.used / d.total
+        worst = max(worst, u)
+        parts.append(f"{mp} {u:.0%} ({d.free // 2**30} GB free)")
+    row("DOWN" if worst > 0.95 else "WARN" if worst > 0.85 else "OK", "disk", " · ".join(parts))
+
+
+SHOWN = {"orch-bus.service", "browser-bus.service", "orch-doctor.timer", "tmux-snapshot.timer", "tmux-restore.service",
+         "tmux-reap-stale.timer", "orch-open-threads.timer", "voice-digest.timer"}
+
+
+def other_units(info):
+    extra = []
+    for u in sorted(info):
+        base = u.rsplit(".", 1)[0]
+        if u in SHOWN or f"{base}.timer" in SHOWN or f"{base}.timer" in info and u.endswith(".service"):
+            continue
+        d = info[u]
+        if not d.get("UnitFileState", "").startswith("enabled") and d.get("ActiveState") != "active":
+            continue
+        extra.append(u)
+    if not extra:
+        return
+    sect("OTHER USER UNITS")
+    for u in extra:
+        d = info[u]
+        if u.endswith(".timer"):
+            timer_row(info, u, u.rsplit(".", 1)[0])
+        else:
+            ran_once = d.get("SubState") == "exited"
+            row("OK" if d.get("ActiveState") == "active" else "DOWN", u.rsplit(".", 1)[0],
+                f"{d.get('ActiveState')}/{d.get('SubState')}" + (" (ran once at login)" if ran_once else ""))
+
+
+# ---------------------------------------------------------------- render
+def render():
+    rows.clear()
+    root, mode = magi_root()
+    f = slow_facts(root, mode)
+    c = conf()
+    info = units_info(unit_names(root))
+    for fn in (lambda: system(f), lambda: orchestration(c, info), lambda: ledger(c, info), lambda: bus(c, info),
+               lambda: housekeeping(c, info), lambda: desktop(info), lambda: other_units(info)):
+        try:
+            fn()
+        except Exception as e:  # one broken check must never kill the panel
+            row("WARN", "panel", f"check failed: {type(e).__name__}: {str(e)[:80]}")
+    size = shutil.get_terminal_size((100, 40))
+    width = size.columns
+    height = size.lines if sys.stdout.isatty() else 10**6
+    counts = {}
+    for _, st, _, _ in rows:
+        if st:
+            counts[st] = counts.get(st, 0) + 1
+    summary = " ".join(paint(C[k], f"{k} {counts[k]}") for k in ("DOWN", "WARN", "MUTED", "OK", "OFF", "INFO") if counts.get(k))
+    head = paint("1", f"mAGI STATUS {time.strftime('%a %d %b %H:%M:%S')}") + (f" · every {INTERVAL}s · read-only" if width >= 60 else "")
+    for level in range(5):  # shrink until it fits: fewer detail lines, then fold OK rows per section
+        out = layout(width, level)
+        if len(out) + 2 <= height:
+            break
+    body = out[: max(1, height - 3)] if height < 10**6 else out
+    return "\n".join([head, summary] + body)
+
+
+def layout(width, level):
+    stacked = width < 60
+    nw = 15 if width >= 90 else 12
+    ind = 2 if stacked else 7 + nw + 1
+    dw = max(16, width - ind)
+    maxl = (6, 2, 1, 2, 1)[level]
+    out, folded = [], []
+
+    def flush():
+        if folded:
+            ls = textwrap.wrap("OK     " + ", ".join(folded), width, subsequent_indent=" " * (2 if stacked else 7), break_on_hyphens=False)
+            out.extend([paint(C["OK"], "OK") + ls[0][2:]] + ls[1:])
+            folded.clear()
+
+    sec = ""
+    for s, st, name, det in rows:
+        if st is None:
+            flush()
+            sec = s
+            if level < 1:
+                out.append("")
+            out.append(paint("1;35", s[:width]))
+            continue
+        if level >= 3 and st in ("OK", "OFF") and sec != "SYSTEM":
+            folded.append(name + (" (off)" if st == "OFF" else ""))
+            continue
+        tag = paint(C.get(st, "0"), f"{st:<6}")
+        lines = textwrap.wrap(det or "", dw, break_on_hyphens=False) or [""]
+        if len(lines) > maxl:
+            lines = lines[:maxl]
+            lines[-1] = lines[-1][: dw - 1] + "…"
+        if stacked or len(name) > nw:
+            out.append(f"{tag} {name}")
+            out += [" " * ind + l for l in lines]
+        else:
+            out.append(f"{tag} {name:<{nw}} {lines[0]}")
+            out += [" " * ind + l for l in lines[1:]]
+    flush()
+    return out
+
+
+def paint(code, s):
+    return f"\033[{code}m{s}\033[0m" if COLOR else s
+
+
+def main():
+    if "-h" in sys.argv or "--help" in sys.argv:
+        print(__doc__)
+        return 0
+    if "--once" in sys.argv:
+        print(render())
+        return 0
+    sys.stdout.write("\033[?25l")
+    try:
+        while True:
+            frame = render()
+            sys.stdout.write("\033[H\033[2J" + frame + "\n")
+            sys.stdout.flush()
+            time.sleep(INTERVAL)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        sys.stdout.write("\033[?25h")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

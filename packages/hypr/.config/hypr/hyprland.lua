@@ -1,5 +1,5 @@
 -- MAGI: Hyprland 0.57 (Lua config), riced Evangelion-style. Part of the MAGI repo
--- (packages/hypr, stowed into ~). SUPER is the WM key. Alt is left alone: tmux owns Alt binds.
+-- (packages/hypr, stowed into ~). SUPER is the WM key. Alt belongs to tmux, except ALT + M.
 -- Colours come from themes/current (blue, nerv or unit01); switch with `eva-theme <name>`.
 
 local HOME = os.getenv("HOME")
@@ -206,6 +206,8 @@ hl.bind(mod .. " + SHIFT + Space", hl.dsp.exec_cmd("magi"))
 hl.bind(mod .. " + SHIFT + M",     hl.dsp.exec_cmd("magi-agent voice toggle"))
 hl.bind(mod .. " + E",             hl.dsp.exec_cmd("nautilus --new-window"))
 hl.bind(mod .. " + O",             hl.dsp.exec_cmd("magi-overview"))
+-- Status panel (tmux window magi-status, created if missing): the one Alt bind; the rest of Alt is tmux's
+hl.bind("ALT + M",                 hl.dsp.exec_cmd("magi-status-show"))
 -- ranger in Alacritty (SUPER+SHIFT+E stays "exit Hyprland")
 hl.bind(mod .. " + R",             hl.dsp.exec_cmd(terminal .. " --class eva-files -e ranger"))
 

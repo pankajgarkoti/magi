@@ -109,9 +109,12 @@ the command that started them, everything else as a shell in the same folder.
 `Journal/YYYY/MM/YYYY-MM-DD.md`, from `templates/daily.md`: `# Tasks`, `# Notes`, `# Logs`,
 `# Scratch`. The orchestrator writes into it:
 
-- open threads (decisions you haven't made, parked work) as checkboxes under `## Open threads`.
-  Tick one and it is closed in the ledger too. Every 3 hours the orchestrator is reminded of the
-  ones still open;
+- open threads as checkboxes under `## Open threads`: decisions you haven't made, work that is
+  parked, and every agent window the idle reaper closed (with the command that resumes it; the
+  last screen goes to a `YYYY-MM-DD.threads.md` file next to the note). Tick one and it is closed
+  in the ledger too. Every 3 hours (00:30, 03:30, ...) the orchestrator is reminded of the ones
+  still open from the last 30 days and asks you about each. `orch-thread add "..."`, `scan` and
+  `count` work from any terminal;
 - what you asked for out loud: every 3 hours the voice digest turns what the listener heard into
   action items under `## From voice (14:00–17:00)`, using your agent non-interactively (without
   one, the raw lines go under `# Notes`);
@@ -143,7 +146,14 @@ shipped, so a reboot or a compacted context loses none of it. `orch status` prin
 screen. Open threads are also checkboxes in the daily note (see [Notes](#your-terminal-and-your-notes)).
 `orch-doctor.timer` runs `orch doctor` every 15 minutes: user units, the tmux windows, the
 agent browser, browser-bus, the notes repo and its links, ledger integrity and a daily backup.
-It fixes what is safe and puts the rest on the bus, once per change. (0.2.0 kept the ledger and
+It fixes what is safe and puts the rest on the bus, once per change.
+
+**Status panel.** ALT + M shows `magi-status`, a read-only panel in the tmux window
+`magi-status`: the image version and any staged update, the orchestrator and its agents, the
+listener, the ledger and doctor, the event bus, browser-bus and agent browser, the timers, the
+notes repo, memory, disk and battery. It refreshes every 15 seconds. If the window doesn't exist,
+ALT + M creates it (in session `magi`), and if no terminal shows that session it opens one.
+`magi-status --once` prints one frame. (0.2.0 kept the ledger and
 threads in `~/.local/share/magi`; 0.3.0 moves them into the notes at first login.)
 
 **Agent browser.** The tmux window `chrome` runs `chrome-debug`: Fedora's Chromium with its own
@@ -360,7 +370,7 @@ setup steps with your current theme, and reloads Hyprland, waybar and the mAGI p
 
 ## Shortcuts
 
-SUPER does window management. Alt is left alone because tmux uses it.
+SUPER does window management. Alt is left to tmux, except ALT + M (status panel).
 
 | Keys | Action |
 |---|---|
@@ -383,6 +393,7 @@ SUPER does window management. Alt is left alone because tmux uses it.
 | SUPER + Tab, or tap SUPER twice | Previous workspace |
 | SUPER + ` | Orchestrator console (drop-down tmux session `magi`) |
 | SUPER + SHIFT + M | Mute / unmute the listener |
+| ALT + M | Status panel (tmux window `magi-status`) |
 | SUPER + SHIFT + ` | Send window to the scratchpad |
 | SUPER + A | **Window mode**: plain h j k l focus, H J K L move, arrows resize, 1–9, f, v, q; Esc leaves |
 | SUPER + W | Next wallpaper |

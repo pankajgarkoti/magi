@@ -49,7 +49,7 @@ jobs:
           podman run --rm localhost/magi:latest sh -euc '
             grep "^PRETTY_NAME=" /usr/lib/os-release
             if rpm -q fedora-logos; then echo fedora-logos present; exit 1; fi
-            for t in eva-wifi magi magi-overview wall-next magi-agent magi-listen hud-say orch orch-bus browser-bus chrome-debug magi-terminal chromium-browser node npx; do command -v "$t"; done
+            for t in eva-wifi magi magi-overview wall-next magi-status magi-status-show orch-thread magi-agent magi-listen hud-say orch orch-bus browser-bus chrome-debug magi-terminal chromium-browser node npx; do command -v "$t"; done
             systemctl --global is-enabled orch-bus.service browser-bus.service orch-doctor.timer orch-open-threads.timer tmux-restore.service tmux-snapshot.timer voice-digest.timer
             test -f /usr/share/magi/packages/tmux/.tmux/plugins/tmux-sensible/sensible.tmux
             Hyprland --version | head -1

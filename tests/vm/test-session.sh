@@ -41,6 +41,7 @@ if [ "${1:-}" = reboot ]; then
   check "  ... running its program again (tail)" waitfor 20 bash -c "pgrep -P \$(tmux list-panes -t =main:=work -F '#{pane_pid}') -x tail"
   check "window 'scratch' restored in main as a shell" bash -c "tmux list-windows -t =main -F '#W' | grep -qx scratch"
   check "the open thread survived the reboot" bash -c "orch thread scan | grep -q 'session test thread'"
+  check "the status panel window came back running the panel" waitfor 20 bash -c "tmux capture-pane -p -t magi-status | grep -q 'mAGI STATUS'"
   info "restore log: $(tail -6 ~/.local/state/tmux-snapshot/restore.log | tr '\n' ' ' | cut -c1-300)"
   echo; [ $fails = 0 ] && echo "RESULT: PASS" || echo "RESULT: FAIL ($fails)"
   exit $fails
@@ -90,6 +91,27 @@ mkdir -p ~/.local/state/magi/voice/transcripts
 python3 -c "import json,datetime as d,os; n=d.datetime.now().astimezone(); open(os.path.expanduser('~/.local/state/magi/voice/transcripts/%s.jsonl' % n.strftime('%Y-%m-%d')),'a').write(json.dumps({'at': (n-d.timedelta(minutes=2)).isoformat(timespec='seconds'), 'text': 'remind me to water the plants'})+'\n')"
 orch voice-digest >/dev/null
 check "voice digest wrote to today's note" bash -c "grep -q 'water the plants' $(note)"
+
+# ---- status panel and ALT + M (0.3.1)
+active_ok() { hyprctl -j activewindow | python3 -c "import json,sys; c=json.load(sys.stdin); sys.exit(0 if c.get('class') in ('Alacritty','magi-scratch') else 1)"; }
+panel_selected() { tmux list-windows -a -F '#{window_name} #{window_active} #{session_attached}' | grep -q '^magi-status 1 [1-9]'; }
+check "magi-status --once prints a frame (SYSTEM, mAGI version)" bash -c "magi-status --once --no-color | grep -q \"mAGI .*$(cat /usr/share/magi/IMAGE_VERSION)\""
+check "ALT + M is bound to magi-status-show" bash -c "hyprctl -j binds | python3 -c \"import json,sys; sys.exit(0 if any(b['key'].upper()=='M' and b['modmask']==8 for b in json.load(sys.stdin)) else 1)\""
+tmux kill-window -t magi-status 2>/dev/null
+hyprctl dispatch 'hl.dsp.focus({ workspace = 4 })' >/dev/null
+hyprctl dispatch 'hl.dsp.exec_cmd("magi-status-show")' >/dev/null
+check "ALT + M created the tmux window magi-status" waitfor 10 bash -c "tmux list-windows -a -F '#W' | grep -qx magi-status"
+check "  ... running the panel" waitfor 10 bash -c "tmux capture-pane -p -t magi-status | grep -q 'mAGI STATUS'"
+check "  ... selected, in a session a terminal shows" waitfor 10 panel_selected
+check "  ... and that terminal has focus (left workspace 4)" waitfor 10 active_ok
+info "panel window: $(tmux list-windows -a -F '#S:#I #W' | grep magi-status) · focus: $(hyprctl -j activewindow | python3 -c "import json,sys; c=json.load(sys.stdin); print(c.get('class'), c.get('workspace',{}).get('name'))")"
+tmux select-window -t "$(tmux list-windows -a -F '#S:#I #W' | grep magi-status | cut -d' ' -f1 | cut -d: -f1):^"
+hyprctl dispatch 'hl.dsp.focus({ workspace = 4 })' >/dev/null
+hyprctl dispatch 'hl.dsp.exec_cmd("magi-status-show")' >/dev/null
+check "ALT + M again (window exists, other window selected): panel shown right away" waitfor 5 panel_selected
+check "  ... terminal focused again" waitfor 5 active_ok
+check "orch-thread add / count (same as orch thread)" bash -c "orch-thread add 'orch-thread alias test $$' </dev/null && orch-thread scan | grep -q 'alias test $$'"
+check "open-threads reminder at :30 every 3 h" bash -c "systemctl --user show -p TimersCalendar orch-open-threads.timer | grep -q '00/3:30:00'"
 
 # ---- prepare the restore check: a window with a folder and a program, and a plain shell
 mkdir -p "$T/workdir-$USER"; echo "line" > "$T/workdir-$USER/log.txt"

@@ -3,11 +3,12 @@
 ConditionUser=!@system
 ConditionUser=!gdm-greeter
 ConditionUser=!gdm
-Description=Open-threads reminder every 3 hours
+Description=Open-threads reminder every 3 hours (00:30, 03:30, ... local time)
 
 [Timer]
-OnBootSec=30min
-OnUnitActiveSec=3h
+OnCalendar=*-*-* 00/3:30:00
+Persistent=true
+AccuracySec=1min
 
 [Install]
 WantedBy=timers.target

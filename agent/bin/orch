@@ -40,7 +40,7 @@ Commands (idempotent; none blocks for more than a few seconds)
   orch status [--brief]                      one-screen summary
   orch up                                    start everything: tmux session, core windows, doctor
   orch doctor [--quiet]                      check every piece, fix what is safe, report the rest on the bus
-  orch nudge-threads                         (orch-open-threads.timer) put the open-thread count on the bus
+  orch nudge-threads                         (orch-open-threads.timer, every 3 h) remind the orchestrator of open threads
   orch voice-digest                          (voice-digest.timer) action items from what the listener heard -> daily note
   orch system update                         refresh notes/orchestrator/system from the image, re-link, commit
   orch note [today|path]                     today's daily note (created from the template); print its path
@@ -635,8 +635,9 @@ def nudge_threads(_):
     n = db().execute("SELECT COUNT(*) n FROM threads WHERE status='open'").fetchone()["n"]
     if not n:
         return
-    msg = (f"{n} open thread{'s' if n != 1 else ''} in the daily notes (orch thread scan). Raise each with the user in "
-           f"plain words; tick it under '{HEAD}' in its daily note once it is addressed.")
+    msg = (f"[open-threads] {n} open thread{'s' if n != 1 else ''} in the daily notes, including agents closed while idle. "
+           f"Run `orch thread scan`, raise every one with the user in plain words and ask what to do; "
+           f"tick it under '{HEAD}' in its daily note once it is addressed.")
     bus("open-threads", msg)
     c = db()
     c.execute("INSERT INTO nudges(at,kind,text) VALUES(?,?,?)", (now(), "open-threads", msg))
