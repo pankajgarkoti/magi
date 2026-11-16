@@ -62,3 +62,28 @@ Detection is a tripwire, not the wall. The wall is structural:
 - The breaker stops everything on the first clear hit.
 
 A careful paraphrasing attacker will get past the detectors about 40% of the time, so the frame and the rule are what stop them.
+
+## Trust gating (only EXTERNAL text is ever quarantined or trips the breaker)
+
+- `lib/bus_guard.py` `guard()`: framing and quarantine sit under `if trust == "external":`, and only `risk == "high"` quarantines. Internal text is stored unframed with its risk recorded. Owner text scored high is delivered with a "(bus-guard flagged owner text …)" prefix and is never quarantined. The classifier only runs for `trust == "external" and risk == "medium"`.
+- `lib/bus_store.py` `Bus.emit()`: `dangerous = ev["trust"] == "external" and ev["risk"] == "high"`. Only `dangerous` calls `trip()` or bumps the counter. While the breaker is tripped, every event is held except owner text that is not high risk.
+- Internal events scored HIGH are expected. Agents write reports that quote attacks, commands and approvals (for example the bus-guard LIVE report, or noshow-paid-fix DONE). The score is information only.
+- Test: `test_e2e.py` step 9b. Internal HIGH and owner HIGH are not quarantined and the breaker stays ok.
+
+## Open-source pieces adopted, with licences
+
+The detector itself (normaliser, regex and decoders, framing, breaker) is our own code using only the Python standard library. No patterns were ported from other projects.
+
+| piece | used for | licence |
+|---|---|---|
+| protectai/deberta-v3-base-prompt-injection-v2 (ONNX weights) | optional classifier; escalates regex-medium to high | Apache-2.0 |
+| onnxruntime 1.32.0 | runs the model on CPU | MIT |
+| tokenizers 0.23.3 | DeBERTa tokenizer | Apache-2.0 |
+| huggingface_hub 2.4.0 | one-time model download (weights only; message text never leaves the machine) | Apache-2.0 |
+| numpy 2.5.5 | tensors | BSD-3-Clause (+ MIT/Zlib/0BSD/CC0 parts) |
+
+The classifier venv is at `~/.local/share/bus-guard/venv` (206 MB) and the model is in the HF cache (747 MB). Both are optional: the guard runs without them.
+
+Evaluated and not adopted:
+- Meta Llama Prompt Guard 2 (22M/86M): Llama 4 Community License, gated. Blocked until the owner accepts the licence on Hugging Face and adds a token.
+- LLM Guard (MIT, archived Jul 2026; same DeBERTa model plus torch/presidio), Vigil (Apache-2.0, abandoned 2023; needs OpenAI + chromadb), Rebuff (Apache-2.0, archived; needs OpenAI + Pinecone), NeMo Guardrails (Apache-2.0, active; perplexity checks need ~3 GB gpt2-large and would fire on Hinglish). Details are in `classifier-eval.md`.
