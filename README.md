@@ -9,6 +9,10 @@ mAGI is a Fedora/Hyprland setup built around LLM agents. The main interface is a
 running in tmux. You speak or type to it. It starts other agents, operates the desktop, and asks
 you only for decisions. The desktop around it is Hyprland with three colour themes.
 
+[Get it](#get-it) (installer ISO, `bootc switch`, or `install.sh` on Fedora 44) · [How the event bus works](docs/event-bus.md) · [Discussions](https://github.com/pankajgarkoti/magi/discussions)
+
+If you want to follow the project, starring the repo is how GitHub shows it to more people.
+
 ![The orchestrator console dropped down over the desktop, NERV theme](docs/screenshots/agent-console.png)
 
 ## The orchestrator
@@ -21,7 +25,8 @@ you only for decisions. The desktop around it is Hyprland with three colour them
   finishes, stops at a permission prompt, or exits, a `[magi]` message naming the window is
   typed into the orchestrator, so it doesn't have to poll or guess.
 - **Event bus.** Anything can publish a one-line event with `orch-bus emit`: workers, scripts,
-  probes in the agent browser. Events reach the orchestrator when it is idle. A SQLite ledger
+  probes in the agent browser. Events reach the orchestrator when it is idle
+  ([design and dates](docs/event-bus.md)). A SQLite ledger
   records agents, open threads and decisions across reboots. See
   [Event bus and agent browser](#event-bus-and-agent-browser).
 - **A browser for agents.** Chromium runs in tmux window `chrome` with DevTools on 127.0.0.1:9222,
