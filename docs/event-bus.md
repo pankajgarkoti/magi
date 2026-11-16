@@ -1,7 +1,7 @@
 # The mAGI event bus
 
-Author: Pankaj Garkoti. First published 16 Nov 2026. Covers the event bus as shipped in mAGI
-0.2.0 (15 Nov 2026) and the guard added on the `bus-guard` branch (16 Nov 2026).
+How mAGI's event bus works: the bus as shipped in 0.2.0 (15 Nov 2026) and the guard on the
+`bus-guard` branch (16 Nov 2026).
 
 ## Problem
 
@@ -58,7 +58,7 @@ kept in full in a quarantine file. Only allow-listed probe sources can emit exte
 names. A circuit breaker stops all typing after repeated high-risk events until the owner runs
 `orch-bus resume`. See PR #1.
 
-## Dates
+## History
 
 From this repository's git history (IST, +0530):
 
@@ -71,9 +71,6 @@ From this repository's git history (IST, +0530):
 
 The bus ran on the author's own machine from 10 Nov 2026 before it went into mAGI. Release
 write-up: <https://pankajgarkoti.github.io/blog-magi-0-2-event-bus>.
-
-This file has an OpenTimestamps proof next to it (`event-bus.md.ots`). Check it with
-`ots verify docs/event-bus.md.ots`.
 
 ## Related work
 
