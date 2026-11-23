@@ -17,7 +17,7 @@ with the agent's process alive is "idle". Idle time for pane-read agents is trac
 ~/.local/state/magi/agent/panes.json.
 
 Settings, ~/.config/magi/agent.conf (shell syntax):
-  AGENT=claude|opencode|codex|custom   the orchestrator's agent (default claude)
+  AGENT=claude|opencode|codex|custom   the orchestrator's agent (default opencode)
   SUBAGENT=...                         agents the orchestrator starts (default: AGENT)
   AGENT_CMD='...'                      custom: the command that starts it
   AGENT_PROCESS=name                   custom: its process name (default: first word of AGENT_CMD)
@@ -623,15 +623,15 @@ ADAPTERS = {"claude": Claude, "opencode": OpenCode, "codex": Codex, "custom": Cu
 def get(name=None, role="orchestrator", c=None):
     c = conf() if c is None else c
     if name is None:
-        name = c.get("AGENT") or "claude"
+        name = c.get("AGENT") or "opencode"
         if role == "agents":
             name = c.get("SUBAGENT") or name
-    return ADAPTERS.get(name, Claude)(c)
+    return ADAPTERS.get(name, OpenCode)(c)
 
 
 def all_adapters(c=None):
     c = conf() if c is None else c
-    out = [cls(c) for cls in (Claude, OpenCode, Codex)]
+    out = [cls(c) for cls in (OpenCode, Claude, Codex)]
     if c.get("AGENT_CMD"):
         out.append(Custom(c))
     return out

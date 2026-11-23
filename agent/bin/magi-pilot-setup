@@ -26,7 +26,7 @@ COLORS = HOME + "/.config/hypr/themes/current/colors.css"
 STATE = os.path.join(os.environ.get("XDG_STATE_HOME", HOME + "/.local/state"), "magi/agent")
 CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME", HOME + "/.config"), "magi/agent.conf")
 AGENTS_PY = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib", "magi_agents.py")
-CHOICES = [("claude", "CLAUDE CODE", "Anthropic"), ("opencode", "OPENCODE", "open source, many providers"),
+CHOICES = [("opencode", "OPENCODE", "open source, many providers"), ("claude", "CLAUDE CODE", "Anthropic"),
            ("codex", "CODEX", "OpenAI"), ("custom", "CUSTOM COMMAND", "any terminal agent")]
 
 CSS = """
@@ -120,7 +120,7 @@ def agent_info(name=None):
                              capture_output=True, text=True, timeout=15).stdout
         return json.loads(out)
     except Exception:
-        return {"name": name or "claude", "label": name or "agent", "installed": False}
+        return {"name": name or "opencode", "label": name or "agent", "installed": False}
 
 
 def sources():
@@ -236,7 +236,7 @@ class Pilot(Gtk.ApplicationWindow):
         self.frame(0, "TALK TO ONE AGENT. IT RUNS THE OTHERS.", [
             btn("NOT NOW", self.not_now), btn("SET UP", lambda: self.step_install(), primary=True)])
         for t in [
-            "mAGI can run an orchestrator agent (Claude Code, opencode, Codex, or any terminal agent) "
+            "mAGI can run an orchestrator agent (opencode by default, or Claude Code, Codex, or any terminal agent) "
             "in tmux window 1 of the session \"magi\". You speak or type to it. It starts other "
             "agents in their own windows, checks their work, drives the desktop with hyprctl, and "
             "asks you only for decisions.",
@@ -260,7 +260,7 @@ class Pilot(Gtk.ApplicationWindow):
             btn("NEXT", lambda: self.step_signin())])
         self.next_btn = self.btns.get_last_child()
         self.inst_btn = self.next_btn.get_prev_sibling()
-        cur = agent_info().get("name", "claude")
+        cur = agent_info().get("name", "opencode")
         group = None
         self.radios = {}
         for key, title, who in CHOICES:
