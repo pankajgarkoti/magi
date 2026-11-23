@@ -5,7 +5,7 @@ How mAGI's event bus works: the bus as shipped in 0.2.0 (15 Nov 2026) and the gu
 
 ## Problem
 
-In mAGI the main interface is one orchestrator agent (Claude Code, opencode, Codex or another
+In mAGI the main interface is one orchestrator agent (opencode by default; Claude Code, Codex or another
 terminal agent) running in a tmux pane. It starts other agents and waits on things: a worker
 finishing, a build page changing, a message arriving in a browser tab, a timer.
 

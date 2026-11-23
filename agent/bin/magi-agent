@@ -8,7 +8,7 @@
 #   magi-agent on | off                   start at every login, or stop doing that (opt-out)
 #   magi-agent voice on|off|toggle        the local listener (off = muted, nothing is recorded)
 #   magi-agent setup                      the PILOT SETUP window (agent, install, sign in, voice)
-#   magi-agent use AGENT [CMD...]         orchestrator agent: claude | opencode | codex | custom CMD
+#   magi-agent use AGENT [CMD...]         orchestrator agent: opencode | claude | codex | custom CMD
 #   magi-agent use --sub AGENT [CMD...]   agent for the windows the orchestrator starts
 #   magi-agent install [AGENT]            run that agent's official installer
 #   magi-agent login [AGENT]              that agent's own sign-in

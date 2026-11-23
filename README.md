@@ -17,7 +17,7 @@ If you want to follow the project, starring the repo is how GitHub shows it to m
 
 ## The orchestrator
 
-- **One agent in front.** An orchestrator agent (Claude Code, opencode, Codex, or any terminal
+- **One agent in front.** An orchestrator agent (opencode by default; Claude Code, Codex, or any terminal
   agent) runs in tmux window 1 (session `magi`) and starts at login. SUPER+` drops its console over the desktop; the console also opens by
   itself at login. Other agents get their own tmux windows. The orchestrator starts them,
   checks their work, drives Hyprland through `hyprctl`, and brings you decisions.
@@ -65,17 +65,17 @@ per agent (installer, sign-in, launch, resume, how its state is read) is in
 
 | Agent | Installed by | Resume after reboot | State read from |
 |---|---|---|---|
+| opencode (default) | `curl -fsSL https://opencode.ai/install \| bash` | `opencode --session <id>` | opencode's local server API |
 | Claude Code | `curl -fsSL https://claude.ai/install.sh \| bash` | `claude --resume <id>` | `~/.claude/sessions/<pid>.json` |
-| opencode | `curl -fsSL https://opencode.ai/install \| bash` | `opencode --session <id>` | opencode's local server API |
 | Codex | `curl -fsSL https://chatgpt.com/codex/install.sh \| sh` | `codex resume <id>` | Codex's session rollout file |
 | custom | your own command | starts fresh (or `AGENT_RESUME`) | the tmux pane |
 
-Approval and permission prompts are read from the pane for every agent. Change the agent in
-PILOT SETUP, or:
+Approval and permission prompts are read from the pane for every agent. The default is
+opencode; change the agent in PILOT SETUP, or:
 
 ```bash
-magi-agent use opencode                  # the orchestrator
-magi-agent use --sub claude              # the agents it starts (default: same as the orchestrator)
+magi-agent use claude                   # the orchestrator
+magi-agent use --sub codex              # the agents it starts (default: same as the orchestrator)
 magi-agent use custom aider --model sonnet
 ```
 
