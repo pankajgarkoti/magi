@@ -17,8 +17,9 @@ isolated-world and binding patterns are ported from agent/lib/browser-bus.mjs.
                                        the steady-state calibration harness: measures
                                        net-quiesce / DOM-stable / fixed-delay on live pages
                                        after a navigation-like action and prints the numbers
-                                       that pick the default (ran once, 24 Nov 2026; see
-                                       docs/magi-reflex.md).
+                                       that pick the default (ran once, 24-25 Nov 2026; see
+                                       docs/magi-reflex.md — DOM-stable won; the FlowPilot
+                                       network hint measured worse and was dropped).
 
 Store: ~/.local/state/magi/reflexes/<name>.json (live). Bundled reflexes ship with mAGI in
 agent/reflexes/ and are seeded into the live store on first use. A synced copy of the
@@ -71,11 +72,13 @@ REFLEX_EVAL_TIMEOUT_MS = int(os.environ.get("MAGI_REFLEX_SCRIPT_MS", "120000"))
 VERIFY_EVAL_TIMEOUT_MS = int(os.environ.get("MAGI_REFLEX_VERIFY_MS", "185000"))
 BUS_TEXT = 280
 
-# The steady rule the dogma filter measured best (docs/magi-reflex.md has the numbers):
-# network quiesce — no new requests for quiet_ms — beat DOM-stable (which never fired on
-# WhatsApp's never-quiet DOM) and beat every fixed delay that was actually safe. Phases may
-# override with their own "steady" object.
-DEFAULT_STEADY = {"type": "net", "quiet_ms": 700, "timeout_ms": 15000}
+# The steady rule the dogma filter measured best on 24-25 Nov 2026 (docs/magi-reflex.md
+# has the numbers): DOM-stable — no mutation for quiet_ms — was safe on every measured
+# trial (7/7 loads across WhatsApp/GitHub/HN, 2/2 post-action on WhatsApp's chat-open at
+# quiet_ms >= 700; 400ms fired mid-render), while net-quiesce never fired on WhatsApp's
+# post-load drumbeat (capped) and every fixed delay that was fast enough elsewhere fired
+# before WhatsApp's content existed. FlowPilot's network-sequence hint measured WORSE here.
+DEFAULT_STEADY = {"type": "dom", "quiet_ms": 1000, "timeout_ms": 15000}
 
 TRACE = []  # list of emit(line) functions; empty means no trace
 
@@ -520,7 +523,10 @@ def run_reflex(name, args):
     if not phases:
         return False, f"magi-reflex {name} FAILED: reflex has no phases"
     t0 = time.time()
-    url, _ = resolve_endpoint()
+    try:
+        url, _ = resolve_endpoint()
+    except SystemExit as e:
+        return False, f"magi-reflex {name} FAILED: {e}"
     trace("connecting", url)
     cdp = CDP(url)
     tab = None
@@ -536,6 +542,9 @@ def run_reflex(name, args):
             res = tab.evaluate(wrap(phase["reflex_script"], args),
                                timeout=(phase.get("timeout_ms", REFLEX_EVAL_TIMEOUT_MS) + 10000) / 1000, world_id=wid)
             trace("phase", pname, "reflex ->", trunc(res, 200))
+            rok, rwhy = judge(res)
+            if not rok:
+                raise TabError(rwhy or "reflex script reported failure")
             steady_wait(tab, phase.get("steady"))
             vres = tab.evaluate(wrap(phase["verify_script"], args),
                                 timeout=(phase.get("verify_timeout_ms", VERIFY_EVAL_TIMEOUT_MS) + 10000) / 1000, world_id=wid)
@@ -547,7 +556,7 @@ def run_reflex(name, args):
         elapsed = int((time.time() - t0) * 1000)
         record(reflex, ok=True)
         return True, f"magi-reflex {name} ok in {elapsed} ms ({len(phases)} phases)"
-    except (TabError, TimeoutError, ConnectionError) as e:
+    except Exception as e:  # any failure is one bus line; the tab closes in finally
         why = str(e).split("\n")[0][:200]
         failed = next((p.get("name", "?") for p in phases if not p.get("_ok")), "?")
         record(reflex, ok=False)
