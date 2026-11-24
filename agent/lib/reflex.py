@@ -514,21 +514,8 @@ def steady_wait(tab, cfg):
     raise TabError(f"unknown steady type: {kind}")
 
 
-def run_reflex(name, args):
-    """Returns (ok, line). One bus line out, the tab always closed, the store always updated."""
-    reflex = load_reflex(name)
-    if reflex is None:
-        return False, f"magi-reflex {name} FAILED: no such reflex"
-    phases = reflex.get("phases") or []
-    if not phases:
-        return False, f"magi-reflex {name} FAILED: reflex has no phases"
-    t0 = time.time()
-    try:
-        url, _ = resolve_endpoint()
-    except SystemExit as e:
-        return False, f"magi-reflex {name} FAILED: {e}"
-    trace("connecting", url)
-    cdp = CDP(url)
+def _run_once(cdp, reflex, phases, args, attempt):
+    """One full pass: fresh own tab, every phase (reflex -> steady -> verify). Raises TabError."""
     tab = None
     try:
         tab = Tab(cdp)
@@ -536,7 +523,7 @@ def run_reflex(name, args):
             tab.navigate(reflex["entry_url"])
         for phase in phases:
             pname = phase.get("name", "?")
-            log(f"phase {pname}")
+            log(f"phase {pname}" + (f" (attempt {attempt})" if attempt > 1 else ""))
             trace("phase", pname, "start")
             wid = tab.world()
             res = tab.evaluate(wrap(phase["reflex_script"], args),
@@ -553,17 +540,53 @@ def run_reflex(name, args):
             if not ok:
                 raise TabError(f"verify: {why or 'failed'}")
             phase["_ok"] = True
-        elapsed = int((time.time() - t0) * 1000)
-        record(reflex, ok=True)
-        return True, f"magi-reflex {name} ok in {elapsed} ms ({len(phases)} phases)"
-    except Exception as e:  # any failure is one bus line; the tab closes in finally
-        why = str(e).split("\n")[0][:200]
-        failed = next((p.get("name", "?") for p in phases if not p.get("_ok")), "?")
-        record(reflex, ok=False)
-        return False, f"magi-reflex {name} FAILED at {failed}: {why}"
     finally:
         if tab:
             tab.close()
+
+
+def run_reflex(name, args):
+    """Returns (ok, line). One bus line out, the tab always closed, the store always updated.
+
+    A second WhatsApp Web instance connecting can force-reload our tab mid-flow (seen live:
+    25 Nov). Phases marked safe_to_retry (everything before the first send) therefore get
+    one re-run from a fresh tab; a failure after any non-retryable phase fails for real.
+    """
+    reflex = load_reflex(name)
+    if reflex is None:
+        return False, f"magi-reflex {name} FAILED: no such reflex"
+    phases = reflex.get("phases") or []
+    if not phases:
+        return False, f"magi-reflex {name} FAILED: reflex has no phases"
+    t0 = time.time()
+    try:
+        url, _ = resolve_endpoint()
+    except SystemExit as e:
+        return False, f"magi-reflex {name} FAILED: {e}"
+    trace("connecting", url)
+    cdp = CDP(url)
+    for attempt in (1, 2):
+        for p in phases:
+            p.pop("_ok", None)
+        try:
+            _run_once(cdp, reflex, phases, args, attempt)
+            elapsed = int((time.time() - t0) * 1000)
+            record(reflex, ok=True)
+            return True, f"magi-reflex {name} ok in {elapsed} ms ({len(phases)} phases)"
+        except Exception as e:
+            failed_idx = next((i for i, p in enumerate(phases) if not p.get("_ok")), len(phases) - 1)
+            retryable = (attempt == 1 and failed_idx < len(phases)
+                         and all(p.get("safe_to_retry") for p in phases[: failed_idx + 1]))
+            if retryable:
+                trace(f"attempt 1 failed at {phases[failed_idx].get('name', '?')}: "
+                      f"{str(e).split(chr(10))[0][:160]}; page may have reloaded mid-flow; "
+                      f"retrying once from a fresh tab")
+                continue
+            why = str(e).split("\n")[0][:200]
+            failed = phases[failed_idx].get("name", "?") if failed_idx < len(phases) else "?"
+            record(reflex, ok=False)
+            return False, f"magi-reflex {name} FAILED at {failed}: {why}"
+    return False, f"magi-reflex {name} FAILED: unreachable"
 
 
 # ---------------- store ----------------
