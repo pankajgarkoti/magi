@@ -1,0 +1,72 @@
+{
+  "domain": "httpbin.org",
+  "name": "httpbin-submit",
+  "description": "Fill httpbin form, submit, and verify echoed JSON contains our values.",
+  "when_to_use": "Practice reflex on httpbin.org only.",
+  "entry_url": "https://httpbin.org/forms/post",
+  "inputs": {
+    "custname": {
+      "kind": "string",
+      "required": true
+    },
+    "custtel": {
+      "kind": "string",
+      "required": true
+    },
+    "custemail": {
+      "kind": "string",
+      "required": true
+    },
+    "comments": {
+      "kind": "string",
+      "required": true
+    }
+  },
+  "entry_steady": {
+    "type": "dom_stable",
+    "quiet_ms": 500,
+    "timeout_ms": 10000
+  },
+  "phases": [
+    {
+      "name": "fill",
+      "target_assert": "await h.eval(\"!!document.querySelector('form[action*=post]') && !!document.querySelector('input[name=custname]')\")",
+      "reflex_script": "await h.eval(\"(() => { const el=document.querySelector('input[name=custname]'); if(!el) return false; el.focus(); el.value=\" + JSON.stringify(ARGS.custname) + \"; el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); return true; })()\");\nawait h.eval(\"(() => { const el=document.querySelector('input[name=custtel]'); if(!el) return false; el.focus(); el.value=\" + JSON.stringify(ARGS.custtel) + \"; el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); return true; })()\");\nawait h.eval(\"(() => { const el=document.querySelector('input[name=custemail]'); if(!el) return false; el.focus(); el.value=\" + JSON.stringify(ARGS.custemail) + \"; el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); return true; })()\");\nawait h.eval(\"(() => { const el=document.querySelector('textarea[name=comments]'); if(!el) return false; el.focus(); el.value=\" + JSON.stringify(ARGS.comments) + \"; el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); return true; })()\");\nreturn {ok: true};",
+      "verify_script": "const v = await h.eval(\"({n:document.querySelector('input[name=custname]').value,t:document.querySelector('input[name=custtel]').value,e:document.querySelector('input[name=custemail]').value,c:document.querySelector('textarea[name=comments]').value})\"); const ok = v.n===ARGS.custname && v.t===ARGS.custtel && v.e===ARGS.custemail && v.c===ARGS.comments; return {ok, why: ok ? '' : 'fill mismatch: '+JSON.stringify(v)};",
+      "steady_rule": {
+        "type": "dom_stable",
+        "quiet_ms": 300,
+        "timeout_ms": 5000
+      },
+      "timeout_ms": 30000
+    },
+    {
+      "name": "submit",
+      "target_assert": "await h.eval(\"!!document.querySelector('form[action*=post] button')\")",
+      "reflex_script": "await h.click('form[action=\"/post\"] button', {tries: 3, gap: 300}); return {ok: true};",
+      "verify_script": "const txt = await h.eval('document.body.innerText'); let j=null; try{j=JSON.parse(txt);}catch(e){} const ok = !!j && !!j.form && j.form.custname===ARGS.custname && j.form.custemail===ARGS.custemail && j.form.comments===ARGS.comments; return {ok, why: ok ? '' : 'echoed JSON missing values'};",
+      "steady_rule": {
+        "type": "dom_stable",
+        "quiet_ms": 700,
+        "timeout_ms": 15000
+      },
+      "verify_poll": {
+        "interval_ms": 500,
+        "timeout_ms": 15000
+      },
+      "timeout_ms": 45000
+    },
+    {
+      "name": "verify-echo",
+      "target_assert": "await h.eval('location.pathname===\"/post\"')",
+      "reflex_script": "return {ok: true};",
+      "verify_script": "const txt = await h.eval('document.body.innerText'); let j=null; try{j=JSON.parse(txt);}catch(e){ return {ok:false, why:'not json'}; } const f=j.form||{}; const ok = f.custname===ARGS.custname && f.custtel===ARGS.custtel && f.custemail===ARGS.custemail && f.comments===ARGS.comments; return {ok, why: ok ? '' : 'missing values in '+JSON.stringify(f)};",
+      "steady_rule": {
+        "type": "dom_stable",
+        "quiet_ms": 200,
+        "timeout_ms": 5000
+      },
+      "timeout_ms": 30000
+    }
+  ]
+}

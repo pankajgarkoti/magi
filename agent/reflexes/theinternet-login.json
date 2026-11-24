@@ -1,0 +1,64 @@
+{
+  "domain": "the-internet.herokuapp.com",
+  "name": "theinternet-login",
+  "description": "Login to the-internet.herokuapp.com demo page and verify success flash.",
+  "when_to_use": "Practice reflex on the-internet.herokuapp.com only; use public demo creds.",
+  "entry_url": "https://the-internet.herokuapp.com/login",
+  "inputs": {
+    "username": {
+      "kind": "string",
+      "required": true
+    },
+    "password": {
+      "kind": "string",
+      "required": true
+    }
+  },
+  "entry_steady": {
+    "type": "dom_stable",
+    "quiet_ms": 500,
+    "timeout_ms": 10000
+  },
+  "phases": [
+    {
+      "name": "fill",
+      "target_assert": "await h.eval('!!document.querySelector(\"#username\") && !!document.querySelector(\"#password\")')",
+      "reflex_script": "await h.eval(\"(() => { const el=document.querySelector('#username'); if(!el) return false; el.focus(); el.value=\" + JSON.stringify(ARGS.username) + \"; el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); return true; })()\");\nawait h.eval(\"(() => { const el=document.querySelector('#password'); if(!el) return false; el.focus(); el.value=\" + JSON.stringify(ARGS.password) + \"; el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); return true; })()\");\nreturn {ok: true};",
+      "verify_script": "const v = await h.eval('({u:document.querySelector(\"#username\").value,p:document.querySelector(\"#password\").value})'); const ok = v.u===ARGS.username && v.p===ARGS.password; return {ok, why: ok ? '' : 'fill mismatch'};",
+      "steady_rule": {
+        "type": "dom_stable",
+        "quiet_ms": 300,
+        "timeout_ms": 5000
+      },
+      "timeout_ms": 30000
+    },
+    {
+      "name": "submit",
+      "target_assert": "await h.eval(\"!!document.querySelector('form#login button[type=submit]')\")",
+      "reflex_script": "await h.click('form#login button[type=\"submit\"]', {tries: 3, gap: 300}); return {ok:true};",
+      "verify_script": "const ok = await h.eval(\"location.pathname==='/secure' && !!document.querySelector('.flash.success')\"); const txt = await h.eval('document.querySelector(\".flash\")?.innerText || \"\"'); return {ok: !!ok, why: ok ? '' : 'no success flash: '+txt.slice(0,80)};",
+      "steady_rule": {
+        "type": "dom_stable",
+        "quiet_ms": 700,
+        "timeout_ms": 15000
+      },
+      "verify_poll": {
+        "interval_ms": 500,
+        "timeout_ms": 15000
+      },
+      "timeout_ms": 45000
+    },
+    {
+      "name": "verify-success",
+      "target_assert": "await h.eval(\"location.pathname==='/secure'\")",
+      "reflex_script": "return {ok:true};",
+      "verify_script": "const txt = await h.eval('document.querySelector(\".flash.success\")?.innerText || \"\"'); const ok = txt.toLowerCase().includes('you logged into a secure area'); return {ok, why: ok ? '' : 'flash='+txt.slice(0,120)};",
+      "steady_rule": {
+        "type": "dom_stable",
+        "quiet_ms": 200,
+        "timeout_ms": 5000
+      },
+      "timeout_ms": 30000
+    }
+  ]
+}

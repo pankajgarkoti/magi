@@ -155,6 +155,7 @@ def cmd_run(conn, a):
         die("no candidate version waiting for this reflex")
     doc = store.row_doc(row, use_candidate=use_candidate)
     doc["_served_candidate"] = use_candidate
+    doc["owner_registered"] = bool(row["owner_registered"])
     args = validate_args(doc.get("inputs"), json.loads(a.args) if a.args else {})
     res = runner.run_reflex(doc, args, verbose=not a.quiet, trace_echo=a.trace)
     return 0 if res["ok"] else 1

@@ -121,5 +121,50 @@ check("ws accept-key matches the RFC 6455 example", want == "s3pPLMBiTxaQ9kYGzzh
 check("trunc caps long payloads", len(R.trunc({"a": "x" * 5000})) < 300)
 check("trunc keeps short payloads whole", R.trunc({"a": 1}) == '{"a": 1}')
 
+# ---- Slice C structural target guard (package: agent/lib/reflex/) ----
+PKG = LIB / "reflex"
+sys.path.insert(0, str(LIB))
+from reflex import store as S  # noqa: E402
+from reflex import runner as RR  # noqa: E402
+
+for d in ("127.0.0.1", "localhost", "example.com", "httpbin.org", "the-internet.herokuapp.com", "sub.httpbin.org"):
+    check(f"domain_allowed({d})", S.domain_allowed(d))
+for d in ("web.whatsapp.com", "x.com", "twitter.com", "mail.google.com", "evil.com", ""):
+    check(f"domain disallowed({d})", not S.domain_allowed(d))
+
+try:
+    S.check_domain_allowed("web.whatsapp.com", owner_registered=False)
+    check("disallowed+owner_registered=0 raises", False)
+except S.StoreError as e:
+    check("disallowed+owner_registered=0 raises", "not owner-registered" in str(e))
+
+try:
+    S.check_domain_allowed("web.whatsapp.com", owner_registered=True)
+    check("disallowed+owner_registered=1 allowed by guard", True)
+except S.StoreError:
+    check("disallowed+owner_registered=1 allowed by guard", False)
+
+check("host_matches exact", RR.host_matches("example.com", "example.com"))
+check("host_matches subdomain", RR.host_matches("a.example.com", "example.com"))
+check("host_matches rejects other", not RR.host_matches("evil.com", "example.com"))
+check("host_matches rejects suffix trick", not RR.host_matches("notexample.com", "example.com"))
+
+# runner refusal path: must refuse before opening CDP (no browser needed)
+refused = RR.run_reflex({
+    "name": "bad-reflex", "domain": "web.whatsapp.com", "entry_url": "https://web.whatsapp.com/",
+    "owner_registered": 0,
+    "phases": [{"name": "p1", "target_assert": "true", "reflex_script": "return {ok:true}", "verify_script": "return {ok:true}"}],
+}, {})
+check("run_reflex refuses disallowed domain", refused["ok"] is False and refused.get("phase") == "(refusal)")
+check("run_reflex refusal line exact", refused.get("line") == "magi-reflex bad-reflex REFUSED: domain web.whatsapp.com not owner-registered")
+
+# owner_registered outside allowlist requires exact entry URL
+refused2 = RR.run_reflex({
+    "name": "armed-bad-url", "domain": "evil.com", "entry_url": "https://not-evil.com/path",
+    "owner_registered": 1,
+    "phases": [{"name": "p1", "target_assert": "true", "reflex_script": "return {ok:true}", "verify_script": "return {ok:true}"}],
+}, {})
+check("owner_registered bad entry_url refused", refused2["ok"] is False and "exact entry URL" in refused2.get("why", ""))
+
 print(f"\n{total - fails}/{total} passed")
 sys.exit(1 if fails else 0)

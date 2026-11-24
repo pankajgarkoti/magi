@@ -1,10 +1,11 @@
 """runner: the replay loop. Zero model calls by construction — CDP only.
 
 Generic on purpose: all site knowledge lives in the reflex doc's scripts (the next
-reflexes — gmail-compose, x-post-draft, li-schedule-post — are new JSON, not new
-code). The runner knows only: own tab, navigate, phase -> reflex script ->
-steady wait -> verify script (probe-style, isolated world), repeat, close tab,
-one bus line. Every fumble from 24 Nov is structural here:
+reflexes are new JSON, not new code — and per the 25 Nov incident rules they are
+authored against harmless practice surfaces only). The runner knows only: own tab,
+navigate, entry-domain lock, per-phase pre-action target assertion, phase ->
+reflex script -> steady wait -> verify script (probe-style, isolated world),
+repeat, close tab, one bus line. Every fumble from 24 Nov is structural here:
 
   menu uid flicker        h.click(selector, {tries, gap}) re-finds the element
                           fresh on every try (a re-render between find and
@@ -73,11 +74,12 @@ BOOT = r"""
   const unwrap = (r) => { if (r && r.ok === false) throw new Error(r.why || 'helper failed'); return r && r.value !== undefined ? r.value : r; };
   window.__mrH = {
     click: async (sel, opts) => unwrap(await window.__mrCall(Object.assign({ cmd: 'click_at', sel: sel }, opts || {}))),
+    clickAt: async (x, y) => unwrap(await window.__mrCall({ cmd: 'click_at', x: Number(x), y: Number(y) })),
     focus: async (sel) => unwrap(await window.__mrCall({ cmd: 'eval', expr: 'document.querySelector(' + JSON.stringify(sel) + ') ? (document.querySelector(' + JSON.stringify(sel) + ').focus(), true) : false' })),
     text: async (t) => unwrap(await window.__mrCall({ cmd: 'insert_text', text: String(t) })),
     key: async (k) => unwrap(await window.__mrCall({ cmd: 'key', key: String(k) })),
     eval: async (expr) => unwrap(await window.__mrCall({ cmd: 'eval', expr: expr })),
-    files: async (paths) => unwrap(await window.__mrCall({ cmd: 'set_files', files: paths })),
+    files: async (paths, opts) => unwrap(await window.__mrCall(Object.assign({ cmd: 'set_files', files: paths }, opts || {}))),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     now: () => Date.now(),
   };
@@ -136,9 +138,14 @@ class Tracer:
     def __call__(self, direction, msg):
         rec = {"d": direction}
         if direction == "send":
-            rec.update(m=msg.get("method"), s=bool(msg.get("sessionId")), p=_head(msg.get("params")))
+            rec.update(id=msg.get("id"), m=msg.get("method"), s=bool(msg.get("sessionId")), p=_head(msg.get("params")))
         elif direction == "resp":
-            rec.update(id=msg.get("id"), ok="error" not in msg, e=_head(msg.get("error", {}).get("message")) if "error" in msg else None)
+            ok = "error" not in msg
+            rec.update(id=msg.get("id"), ok=ok)
+            if ok:
+                rec.update(r=_head(msg.get("result"), 160))
+            else:
+                rec.update(e=_head(msg.get("error", {}).get("message")))
         elif direction == "event":
             rec.update(m=msg.get("method"), s=bool(msg.get("sessionId")), p=_head(msg.get("params")))
         self._write(rec)
@@ -174,6 +181,14 @@ class OwnTab:
     # -- lifecycle ---------------------------------------------------------
     def open(self):
         self.tid = self.cdp.send("Target.createTarget", {"url": "about:blank"})["targetId"]
+        # bring OUR tab to the front: WhatsApp Web is a single-active-session app
+        # (a new tab that stays background shows the "open in another window" lock
+        # banner and never renders the chat list). Activation claims the session
+        # for the run; closing the tab at the end releases it back.
+        try:
+            self.cdp.send("Target.activateTarget", {"targetId": self.tid})
+        except CDPError:
+            pass
         self.sid = self.cdp.send("Target.attachToTarget", {"targetId": self.tid, "flatten": True})["sessionId"]
         for m, p in (("Page.enable", {}), ("Runtime.enable", {}), ("Network.enable", {}),
                      ("Page.setInterceptFileChooserDialog", {"enabled": True})):
@@ -255,7 +270,15 @@ class OwnTab:
         return {"ok": False, "why": f"unknown helper cmd {cmd!r}"}
 
     def _cmd_click(self, req):
-        sel, closest = req.get("sel"), req.get("closest")
+        if "x" in req and "y" in req and not req.get("sel"):
+            # raw trusted click at page coordinates (scripts find the point themselves)
+            for typ in ("mouseMoved", "mousePressed", "mouseReleased"):
+                self.cdp.send("Input.dispatchMouseEvent",
+                              {"type": typ, "x": float(req["x"]), "y": float(req["y"]), "button": "left", "clickCount": 1},
+                              self.sid)
+            return {"ok": True}
+        sel = req.get("sel")
+        closest, text = req.get("closest"), req.get("text")
         tries, gap = int(req.get("tries", 3)), float(req.get("gap", 250)) / 1000.0
         if not sel:
             return {"ok": False, "why": "click: no selector"}
@@ -263,6 +286,9 @@ class OwnTab:
             "(() => { try { let el = document.querySelector(" + json.dumps(sel) + ");"
             " if (!el) return { ok: 0, why: 'not found' };"
             + (f"el = el.closest({json.dumps(closest)}) || el;" if closest else "")
+            + (f"if ({json.dumps(text)} && (el.innerText || '').trim().toLowerCase() !== {json.dumps(text.lower())})"
+              " return { ok: 0, why: 'text mismatch: ' + (el.innerText || '').trim().slice(0, 40) };"
+              if text else "")
             + " el.scrollIntoView({ block: 'center' });"
             " const r = el.getBoundingClientRect();"
             " if (r.width < 1 || r.height < 1) return { ok: 0, why: 'zero size' };"
@@ -270,27 +296,69 @@ class OwnTab:
             " return { ok: 1, x: r.left + r.width / 2, y: r.top + r.height / 2 }; }"
             " catch (e) { return { ok: 0, why: String(e) }; } })()"
         )
+        # menu items re-render between find and click (uid flicker): every try
+        # re-runs the find expression fresh, and the click only dispatches when
+        # two finds ~150ms apart agree on the element's position — a re-render
+        # costs a retry, not a misclick
         last = "not found"
         for i in range(max(1, tries)):
             if self._dead:
                 return {"ok": False, "why": "own tab died"}
             pos = self.eval_world(find) or {}
-            if pos.get("ok"):
-                for typ in ("mouseMoved", "mousePressed", "mouseReleased"):
-                    self.cdp.send("Input.dispatchMouseEvent",
-                                  {"type": typ, "x": pos["x"], "y": pos["y"], "button": "left", "clickCount": 1},
-                                  self.sid)
-                return {"ok": True, "x": pos["x"], "y": pos["y"]}
-            last = pos.get("why", "not found")
-            if i + 1 < tries:
-                time.sleep(gap)
-        return {"ok": False, "why": f"click {sel}: {last} after {tries} tries"}
+            if not pos.get("ok"):
+                last = pos.get("why", "not found")
+                if i + 1 < tries:
+                    time.sleep(gap)
+                continue
+            time.sleep(0.15)
+            pos2 = self.eval_world(find) or {}
+            stable = (pos2.get("ok") and abs(pos2.get("x", -99) - pos["x"]) <= 3
+                      and abs(pos2.get("y", -99) - pos["y"]) <= 3)
+            if not stable:
+                last = "element moved between reads (re-render)"
+                if i + 1 < tries:
+                    time.sleep(gap)
+                continue
+            for typ in ("mouseMoved", "mousePressed", "mouseReleased"):
+                self.cdp.send("Input.dispatchMouseEvent",
+                              {"type": typ, "x": pos["x"], "y": pos["y"], "button": "left", "clickCount": 1},
+                              self.sid)
+            return {"ok": True, "x": pos["x"], "y": pos["y"]}
+        why = f"click {sel}" + (f" [{text}]" if text else "") + f": {last} after {tries} tries"
+        return {"ok": False, "why": why}
 
     def _cmd_set_files(self, req):
         files = req.get("files") or []
+        sel = req.get("sel")
         for p in files:
             if not Path(p).is_absolute() or not Path(p).is_file():
                 return {"ok": False, "why": f"file not found: {p}"}
+        if sel:
+            # direct mode: resolve the input the page itself can reach (pierces
+            # shadow roots, where some apps keep their <input type=file>)
+            ctx = self.ensure_world()
+            rr = self.cdp.send("Runtime.evaluate",
+                               {"expression": f"document.querySelector({json.dumps(sel)})",
+                                "contextId": ctx, "returnByValue": False}, self.sid)
+            oid = (rr.get("result") or {}).get("objectId")
+            if not oid:
+                return {"ok": False, "why": f"set_files: no element matches {sel}"}
+            try:
+                self.cdp.send("DOM.setFileInputFiles", {"files": files, "objectId": oid}, self.sid)
+            except CDPError:
+                # fallback for older targets: resolve to nodeId via DOM domain
+                try:
+                    self.cdp.send("DOM.enable", {}, self.sid)
+                except CDPError:
+                    pass
+                try:
+                    node = self.cdp.send("DOM.requestNode", {"objectId": oid}, self.sid)
+                except CDPError as e:
+                    return {"ok": False, "why": f"set_files: DOM.requestNode: {e}"}
+                self.cdp.send("DOM.setFileInputFiles", {"files": files, "nodeId": node["nodeId"]}, self.sid)
+            self._fire_file_events(sel)
+            return {"ok": True, "mode": "direct"}
+        # chooser mode: an attach click opened the (intercepted) file chooser
         chooser, ts = self._chooser or (None, 0)
         waited = 0.0
         while not chooser and waited < 5.0 and not self._dead:
@@ -300,8 +368,24 @@ class OwnTab:
         if not chooser:
             return {"ok": False, "why": "no file chooser opened (did the attach click land?)"}
         self._chooser = None
+        # no synthetic change dispatch here: the native change from setFileInputFiles
+        # carries the files into the app's draft state, and a spurious empty-files
+        # change can reset it. Scripts dispatch explicitly (h.eval) only when a
+        # draft fails to appear.
         self.cdp.send("DOM.setFileInputFiles", {"files": files, "backendNodeId": chooser}, self.sid)
-        return {"ok": True}
+        return {"ok": True, "mode": "chooser"}
+
+    def _fire_file_events(self, sel):
+        """Dispatch input+change on every input matching sel (belt and braces:
+        CDP sets the files; the app's React handler runs on the change event)."""
+        try:
+            self.eval_world(
+                "(() => { const els = Array.from(document.querySelectorAll(" + json.dumps(sel) + "));"
+                " els.forEach((el) => { el.dispatchEvent(new Event('input', { bubbles: true }));"
+                " el.dispatchEvent(new Event('change', { bubbles: true })); });"
+                " return els.length; })()")
+        except (CDPError, CDPClosed):
+            pass
 
     def _respond(self, mid, result):
         expr = ("((id, v) => { const s = window.__mr.pending[id];"
@@ -397,6 +481,42 @@ def wrap_script(script, args):
     return f"(async (ARGS, h) => {{\n{script}\n}})({json.dumps(args)}, window.__mrH)"
 
 
+def wrap_assert(expr, args):
+    """The pre-action target assertion: run EXPR with the script helpers, judge truthiness.
+
+    This is the structural guarantee from the 25 Nov incident: the exact intended
+    target (element/page state) is proven BEFORE any typing or clicking happens,
+    on every phase, every replay. A falsy or throwing assertion fails the phase
+    before the reflex script's first action can run.
+    """
+    why = json.dumps(f"pre-action target assertion falsy: {_head(expr, 120)}")
+    return ("(async (ARGS, h) => { const v = (" + expr + ");\n"
+            f"  return v ? {{ok: true}} : {{ok: false, why: {why}}};\n"
+            f"}})({json.dumps(args)}, window.__mrH)")
+
+
+def host_matches(host, domain):
+    """The entry-domain lock's comparison: exact host, or a subdomain of the reflex's domain."""
+    host = (host or "").lower().rstrip(".")
+    domain = (domain or "").lower().rstrip(".")
+    return bool(domain) and (host == domain or host.endswith("." + domain))
+
+
+def enforce_entry_domain(tab, doc, phase):
+    """Abort if the tab's current origin has left the reflex's entry domain."""
+    try:
+        loc = tab.eval_world("(() => ({ host: location.hostname, href: location.href }))()", timeout=10) or {}
+    except Exception as e:
+        raise RunFail(phase, f"entry-domain lock: could not read location ({e})")
+    host = loc.get("host")
+    if not host_matches(host, doc.get("domain")):
+        raise RunFail(
+            phase,
+            f"entry-domain lock: page host {host!r} left reflex domain {doc.get('domain')!r} (href={loc.get('href')!r})",
+        )
+    return loc
+
+
 def check_result(v, what):
     """Scripts speak {ok, why?}. Anything else is a failure with the raw value."""
     if isinstance(v, dict) and v.get("ok") is True:
@@ -427,6 +547,44 @@ def run_reflex(doc, args, verbose=False, trace_echo=False):
     fail_phase = fail_why = None
     phase_rows = []
     cdp = None
+    tab = None
+    # Incident rules, 25 Nov — enforced before anything opens:
+    #   1. no reflex work on messaging/social surfaces (the wa-send-docs incident);
+    #   2. every phase must carry a pre-action target assertion;
+    #   3. the page we land on must be the reflex's own domain (entry-domain lock).
+    owner_registered = bool(doc.get("owner_registered", 0))
+    try:
+        store.check_domain_allowed(doc.get("domain") or "", owner_registered=owner_registered)
+    except store.StoreError as e:
+        tracer.note("refused", why=str(e))
+        tracer.close()
+        emit_bus(name, f"magi-reflex {name} REFUSED: {e}")
+        return {"ok": False, "elapsed_ms": 0, "phase": "(refusal)", "why": str(e),
+                "line": f"magi-reflex {name} REFUSED: {e}", "trace": str(trace_path)}
+    if owner_registered and not store.domain_allowed(doc.get("domain") or ""):
+        from urllib.parse import urlparse
+        eu = (doc.get("entry_url") or "").strip()
+        p = urlparse(eu)
+        host = (p.hostname or "").lower().rstrip(".")
+        dom = (doc.get("domain") or "").lower().rstrip(".")
+        if p.scheme not in ("http", "https") or not host or host != dom or not eu:
+            why = f"owner-registered reflex requires exact entry URL on domain {doc.get('domain')!r}"
+            tracer.note("refused", why=why)
+            tracer.close()
+            line = f"magi-reflex {name} REFUSED: {why}"
+            emit_bus(name, line)
+            return {"ok": False, "elapsed_ms": 0, "phase": "(refusal)", "why": why,
+                    "line": line, "trace": str(trace_path)}
+    missing = [ph.get("name", "?") for ph in phases if not str(ph.get("target_assert") or "").strip()]
+    if missing:
+        why = ("no pre-action target assertion on phase(s): " + ", ".join(missing)
+               + " (incident rule, 25 Nov)")
+        tracer.note("refused", why=why)
+        tracer.close()
+        line = f"magi-reflex {name} REFUSED: {why}"
+        emit_bus(name, line)
+        return {"ok": False, "elapsed_ms": 0, "phase": "(refusal)", "why": why,
+                "line": line, "trace": str(trace_path)}
     try:
         if verbose:
             print(f"magi-reflex run {name}: {len(phases)} phase(s), entry {doc['entry_url']}", flush=True)
@@ -440,6 +598,43 @@ def run_reflex(doc, args, verbose=False, trace_echo=False):
         entry_steady = doc.get("entry_steady") or {"type": "fixed", "delay_ms": 1000}
         tab.steady(entry_steady, note="(entry)")
 
+        # entry-domain lock (incident rule, 25 Nov): the reflex acts only on its
+        # own domain — a redirect, a parked page or a wrong entry can never turn
+        # a reflex loose on some other site's page
+        loc = tab.eval_world("(() => ({ host: location.hostname, href: location.href }))()", timeout=10) or {}
+        if not host_matches(loc.get("host"), doc.get("domain")):
+            raise RunFail(
+                "(entry)",
+                f"entry-domain lock: page host {loc.get('host')!r} is not the reflex domain "
+                f"{doc.get('domain')!r} — refusing to act")
+        tracer.note("entry-domain lock ok", host=loc.get("host"))
+
+        # entry probe: a page that never booted (blank/stuck app) cannot be
+        # rescued by scripts — reload and re-probe, bounded. The probe is the
+        # reflex's own "this page is alive" expression, so it stays generic.
+        probe = doc.get("entry_probe")
+        if probe:
+            retries = int(doc.get("entry_retries", 1))
+            while True:
+                deadline = time.time() + doc.get("entry_probe_timeout_ms", 25000) / 1000.0
+                alive = False
+                while time.time() < deadline:
+                    try:
+                        alive = bool(tab.eval_world(probe, timeout=10))
+                    except (CDPError, CDPClosed):
+                        alive = False
+                    if alive:
+                        break
+                    time.sleep(0.5)
+                if alive or retries <= 0 or tab._dead:
+                    if not alive:
+                        tracer.note("entry probe never passed; proceeding (phase scripts will judge)")
+                    break
+                retries -= 1
+                tracer.note("entry probe failed; reloading the page", retries_left=retries)
+                tab.navigate(doc["entry_url"])
+                tab.steady(entry_steady, note="(entry-retry)")
+
         for ph in phases:
             ph_name = ph["name"]
             t_ph = time.time()
@@ -447,22 +642,34 @@ def run_reflex(doc, args, verbose=False, trace_echo=False):
                 raise RunFail(ph_name, "own tab died")
             try:
                 tracer.note("phase reflex", phase=ph_name)
+                enforce_entry_domain(tab, doc, ph_name)
+                # the pre-action target assertion runs FIRST: the exact intended
+                # target is proven before the phase types or clicks anything
+                ta = ph.get("target_assert") or "true"
+                v = tab.eval_world(wrap_assert(ta, args), timeout=min(20.0, ph.get("timeout_ms", 90000) / 1000.0))
+                why_ta = check_result(v, "target_assert")
+                if why_ta:
+                    raise RunFail(ph_name, f"pre-action target assertion failed: {why_ta}")
                 v = tab.eval_world(wrap_script(ph["reflex_script"], args), timeout=ph.get("timeout_ms", 90000) / 1000.0)
                 why = check_result(v, "reflex script")
             except (CDPError, CDPClosed) as e:
                 msg = str(e)
-                if "navigated or closed" in msg or "Cannot find context" in msg:
+                if ("navigated or closed" in msg or "Cannot find context" in msg
+                        or "context was destroyed" in msg or "execution context" in msg.lower()):
                     # the action itself navigated (its own eval dies with the old
                     # document); wait for the new one and let verify judge
                     tracer.note("reflex eval ended by a navigation; waiting for the new document", phase=ph_name)
                     tab.wait_load_since(t_ph)
                     why = None
+                    why_ta = None
                 else:
                     why = f"reflex script error: {_head(str(e), 300)}"
+                    why_ta = None
             if why:
                 raise RunFail(ph_name, why)
             st = tab.steady(ph.get("steady_rule"), note=ph_name)
             tracer.note("steady", phase=ph_name, **st)
+            enforce_entry_domain(tab, doc, ph_name)
             poll = ph.get("verify_poll") or {}
             deadline = time.time() + (poll.get("timeout_ms", 0) / 1000.0)
             interval = poll.get("interval_ms", 1500) / 1000.0
@@ -490,6 +697,13 @@ def run_reflex(doc, args, verbose=False, trace_echo=False):
     except (CDPError, CDPClosed) as e:
         fail_phase, fail_why = "(connect)", f"CDP: {_head(str(e), 200)}"
     finally:
+        # ALWAYS close our own tab — a leaked tab poisons the app's session for
+        # every later run (measured: 5 WhatsApp tabs fighting over one session)
+        try:
+            if tab is not None:
+                tab.close()
+        except Exception:
+            pass
         try:
             if cdp is not None:
                 cdp.close()

@@ -25,6 +25,36 @@ TRACE_DIR = DB_PATH.parent / "reflexes" / "traces"
 RUNS_KEEP_PER_NAME = 100
 DEMOTE_AFTER_CONSECUTIVE = 2  # two failed replays in a row -> broken (a single flake is not)
 
+# Incident law, 25 Nov: no reflex may act on a real messaging/social surface, and
+# development happens on harmless surfaces only. Anything outside this allowlist
+# must be explicitly owner-registered before a replay can open a tab.
+ALLOWED_DOMAINS = (
+    "127.0.0.1",
+    "localhost",
+    "example.com",
+    "httpbin.org",
+    "the-internet.herokuapp.com",
+)
+
+
+def domain_allowed(domain):
+    d = (domain or "").lower().rstrip(".")
+    return bool(d) and any(d == a or d.endswith("." + a) for a in ALLOWED_DOMAINS)
+
+
+def check_domain_allowed(domain, owner_registered=False):
+    """Structural target guard (incident law, 25 Nov).
+
+    Reflexes outside the harmless-surface allowlist are refused unless the owner
+    has explicitly registered them. The refusal bus line is exact so operators and
+    tests can key on it.
+    """
+    if domain_allowed(domain):
+        return
+    if owner_registered:
+        return
+    raise StoreError(f"domain {domain} not owner-registered")
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS reflexes (
   domain TEXT NOT NULL,
