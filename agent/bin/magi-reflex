@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# magi-reflex: the muscle-memory layer — replayed browser flows over the browser-bus
+# CDP transport, zero model calls. See agent/lib/reflex/ and docs/magi-reflex.md.
+here=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+exec python3 "$here/../lib/reflex/cli.py" "$@"
