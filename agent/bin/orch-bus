@@ -3,9 +3,10 @@
 them between tasks, or gets them typed into its input when it is idle. Events are appended to
 ~/.local/state/orchestrator/events.jsonl, one JSON object per line. Nothing listens on a port.
 
-  orch-bus emit SOURCE TEXT [--key KEY] [--external] [--stdin] [--json]
+  orch-bus emit SOURCE TEXT [--key KEY] [--external] [--stdin] [--json] [--urgent]
                                           publish (KEY dedupes). --external: the text was written by
                                           someone outside (a transcript, a web page): framed as data.
+                                          --urgent: also send a desktop notification via notify-send.
                                           wa-*/tg-*/r/ sources are reserved for browser-bus probes.
   orch-bus status                         circuit breaker, held events, quarantine count
   orch-bus resume                         owner only: clear a tripped breaker, release held events
@@ -120,18 +121,19 @@ def main(argv):
     cmd = argv[0]
     if cmd == "emit":
         key = None
-        flags = {f for f in ("--external", "--stdin", "--json", "--probe", "--delivered") if f in argv}
+        flags = {f for f in ("--external", "--stdin", "--json", "--probe", "--delivered", "--urgent") if f in argv}
         argv = [a for a in argv if a not in flags]
         if "--key" in argv:
             i = argv.index("--key")
             key = argv[i + 1]
             argv = argv[:i] + argv[i + 2:]
         if len(argv) < 2 or (len(argv) < 3 and "--stdin" not in flags):
-            print("usage: orch-bus emit SOURCE TEXT [--key KEY] [--external] [--stdin]", file=sys.stderr)
+            print("usage: orch-bus emit SOURCE TEXT [--key KEY] [--external] [--stdin] [--urgent]", file=sys.stderr)
             return 2
         text = sys.stdin.read() if "--stdin" in flags else " ".join(argv[2:])
         ev, code = bus_store.Bus(DIR).emit(argv[1], text, key, external="--external" in flags, probe="--probe" in flags,
-                                           token=os.environ.get("ORCH_BUS_PROBE_TOKEN"), delivered="--delivered" in flags)
+                                           token=os.environ.get("ORCH_BUS_PROBE_TOKEN"), delivered="--delivered" in flags,
+                                           urgent="--urgent" in flags)
         if "--json" in flags:
             print(json.dumps(ev, ensure_ascii=False))
         if code == 3:

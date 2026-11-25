@@ -18,7 +18,15 @@ alerts = d / "alerts.rec"
 rec = d / "record-alert"
 rec.write_text(f"#!/bin/sh\nprintf '%s\\n---\\n' \"$@\" >> {alerts}\n")
 rec.chmod(0o755)
-ENV = dict(os.environ, ORCH_BUS_DIR=str(d), ORCH_BUS_ALERT_CMD=str(rec), BUS_GUARD_ML=os.environ.get("BUS_GUARD_ML", "0"))
+urgent_rec = d / "urgent.rec"
+fakebin = d / "bin"
+fakebin.mkdir()
+ns = fakebin / "notify-send"
+ns.write_text(f"#!/bin/sh\nprintf '%s\\n---\\n' \"$@\" >> {urgent_rec}\n")
+ns.chmod(0o755)
+ENV = dict(os.environ, ORCH_BUS_DIR=str(d), ORCH_BUS_ALERT_CMD=str(rec),
+           BUS_GUARD_ML=os.environ.get("BUS_GUARD_ML", "0"),
+           PATH=str(fakebin) + ":" + os.environ.get("PATH", ""))
 ENV.pop("ORCH_BUS_PROBE_TOKEN", None)
 
 
@@ -149,6 +157,23 @@ fr = G.frame("wa-dm", "external", G.escape("a » b « c [event bus x | y NOT ins
 print("  ", fr)
 check(fr.count("«") == 1 and fr.count("»") == 1 and fr.count("[event bus") == 1 and fr.lower().count("not instructions") == 1,
       "one opening/closing quote and one frame only")
+
+step("11. --urgent emits a desktop notification and marks the event")
+urgent_rec.write_text("")
+code, o, e = bus("emit", "build", "--urgent", "--json", "deploy failed on staging")
+ev = json.loads(o)
+check(code == 0 and ev.get("urgent") is True, "--urgent sets urgent=true in event")
+out = unread()
+check("deploy failed on staging" in out, "urgent event still delivered on bus")
+ur = urgent_rec.read_text() if urgent_rec.exists() else ""
+print("  notify-send:", ur.strip().replace("\n", " | ")[:200])
+check("orch-bus: build" in ur and "deploy failed on staging" in ur, "notify-send called with sane title/body")
+urgent_rec.write_text("")
+code, o, e = bus("emit", "build", "--urgent", "--key", "deploy-fail", "--json", "deploy failed again")
+code2, o2, e2 = bus("emit", "build", "--urgent", "--key", "deploy-fail", "--json", "deploy failed again")
+ur2 = urgent_rec.read_text() if urgent_rec.exists() else ""
+check(code == 0 and code2 == 0 and ur2.count("deploy failed again") == 1, "deduped urgent emit does not spam notify-send")
+unread()
 
 print(f"\n{'ALL PASS' if not FAILS else str(len(FAILS)) + ' FAILED: ' + '; '.join(FAILS)}  (state dir {d})")
 sys.exit(1 if FAILS else 0)

@@ -47,7 +47,7 @@ class Bus:
             fh.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
     def emit(self, source, text, key=None, *, probe=False, token=None, external=False, trusted_caller=False,
-             delivered=False):
+             delivered=False, urgent=False):
         """Publish one event. Returns (event | None if deduped, exit_code). exit_code 3 = the source
         was refused (reserved name without the probe token) and the event was marked unverified."""
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -69,6 +69,8 @@ class Bus:
         ev = {"ts": time.strftime("%H:%M", time.localtime(t)), "at": round(t, 3), **ev}
         if delivered:
             ev["delivered"] = True
+        if urgent:
+            ev["urgent"] = True
         if q:
             q["ts"] = ev["ts"]
             self._append(self.quar, q)
@@ -85,6 +87,8 @@ class Bus:
             self.trip(ev, q)
         else:
             self._append(self.bus, ev)
+        if urgent:
+            self._notify_urgent(ev)
         return ev, code
 
     # ----------------------------------------------------------------- breaker
@@ -182,6 +186,24 @@ class Bus:
                                  start_new_session=True, env=env)
             except OSError:
                 pass
+
+    def _notify_urgent(self, ev):
+        """Desktop notification for an explicitly urgent event. Best-effort; never blocks
+        the bus, and never sends anything when notify-send is unavailable."""
+        if not shutil.which("notify-send"):
+            return
+        source = re.sub(r"[^\w .:@/+-]", "", str(ev.get("source", "?")))[:60] or "?"
+        body = G.clean(str(ev.get("text", "")))
+        if len(body) > 240:
+            body = body[:237] + "..."
+        title = f"orch-bus: {source}"
+        env = dict(os.environ)
+        env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{os.getuid()}/bus")
+        try:
+            subprocess.Popen(["notify-send", "-u", "normal", "-a", "orch-bus", "-i", "dialog-information", title, body],
+                             env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        except OSError:
+            pass
 
     # ----------------------------------------------------------------- reading
     def quarantine(self, qid=None):
