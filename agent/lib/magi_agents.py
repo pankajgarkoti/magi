@@ -802,13 +802,23 @@ def event_line(window, ev, row):
 
 
 def deliver_to_orchestrator(text, wait=600, poll=3):
-    """Type a line into the orchestrator's pane once it is idle and its input box is empty, so it
-    never lands in the middle of a turn or of something the user is typing."""
+    """Deliver a line to the orchestrator. Prefers OpenCode prompt API (no tmux keystrokes,
+    no input garbling); falls back to tmux send-keys when the orchestrator is idle and the
+    input box is empty."""
     c = conf()
     end = time.time() + wait
     while time.time() < end:
         o = next((r for r in agents(c) if r["session"] == SESSION and r["window"] == "orchestrator"), None)
         if o and o["state"] == "idle":
+            if o.get("agent") == "opencode" and o.get("session_id"):
+                try:
+                    body = json.dumps({"text": text})
+                    r = subprocess.run(["opencode", "api", "post", f"/api/session/{o['session_id']}/prompt", "-d", body],
+                                       capture_output=True, text=True, timeout=15)
+                    if r.returncode == 0:
+                        return True
+                except Exception:
+                    pass
             a = get(o["agent"], c=c)
             if not a.draft(o["pane"]):
                 subprocess.run(["tmux", "send-keys", "-t", o["pane"], "-l", text])

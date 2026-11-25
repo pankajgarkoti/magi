@@ -8,7 +8,7 @@ Documentation=https://github.com/pankajgarkoti/magi
 After=magi-agents.service
 
 [Service]
-Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=%h/.local/bin:%h/.opencode/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/usr/bin/env orch-bus dispatch
 Restart=always
 RestartSec=5
