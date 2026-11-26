@@ -57,15 +57,16 @@ Options:
   --update          keep the current theme and old backups (used by magi-update)
   --no-packages     skip COPR + dnf (configs only)
   --no-wallpapers   skip the wallpaper downloads
+  --no-agent-layer skip the agent layer in the distro layout (/usr/share/magi, /usr/bin links, user units)
   --wallpapers-only only generate/download missing wallpapers (the MAGI image runs this at login)
-  --links-only      steps 1-8 only (links, shell, wallpapers), no theme or verify: what the session
-                    needs before the compositor starts; the rest runs once it is up
+  --links-only      steps 1-8 only (links, shell, wallpapers), no theme, agent layer or
+                    verify: what the session needs before the compositor starts; the rest runs once it is up
   -h, --help        this help
 Environment: MAGI_DIR (checkout, default ~/.local/share/magi), MAGI_REPO, MAGI_BRANCH
 EOF
 }
 
-DRY=0 UPDATE=0 THEME= DO_PKGS=1 DO_WALLS=1 ONLY_WALLS=0 LINKS_ONLY=0
+DRY=0 UPDATE=0 THEME= DO_PKGS=1 DO_WALLS=1 DO_AGENT=1 ONLY_WALLS=0 LINKS_ONLY=0
 ARGS=("$@")
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -75,6 +76,7 @@ while [ $# -gt 0 ]; do
     --theme=*) THEME=${1#--theme=} ;;
     --no-packages) DO_PKGS=0 ;;
     --no-wallpapers) DO_WALLS=0 ;;
+    --no-agent-layer) DO_AGENT=0 ;;
     --wallpapers-only) ONLY_WALLS=1 DO_PKGS=0 ;;
     --links-only) LINKS_ONLY=1 ;;
     -h|--help) usage; exit 0 ;;
@@ -88,7 +90,7 @@ case "${THEME:-blue}" in blue|nerv|unit01) ;; *) echo "install.sh: theme must be
 # ---------------------------------------------------------------- output helpers
 if [ -t 1 ]; then B=$'\e[1m' D=$'\e[2m' G=$'\e[32m' Y=$'\e[33m' RD=$'\e[31m' C=$'\e[36m' R=$'\e[0m'
 else B= D= G= Y= RD= C= R=; fi
-STEP=0 TOTAL=10 ERRORS=0
+STEP=0 TOTAL=11 ERRORS=0
 WARNINGS=()
 step() { STEP=$((STEP + 1)); printf '\n%s[%d/%d] %s%s\n' "$B$C" "$STEP" "$TOTAL" "$*" "$R"; }
 ok()   { printf '  %s✓%s %s\n' "$G" "$R" "$*"; }
@@ -321,12 +323,62 @@ step "Wallpapers"
 wallpapers_step
 
 if [ "$LINKS_ONLY" = 1 ]; then
-  ok "links in place; theme and verify run separately (--links-only)"
+  ok "links in place; theme, agent layer and verify run separately (--links-only)"
   trap - ERR
   exit $(( ERRORS > 0 ))
 fi
 
-# ---------------------------------------------------------------- 9. desktop settings + theme
+# ---------------------------------------------------------------- 9. agent layer (distro layout)
+step "Agent layer (/usr/share/magi, /usr/bin links, user units)"
+if [ "$DO_AGENT" = 0 ]; then skip "--no-agent-layer"
+elif [ "$MAGI_DIR" = /usr/share/magi ]; then
+  skip "running from the image tree itself (distro layout already in place)"
+else
+  # /usr/share, /usr/bin and /usr/lib/systemd/user are root-owned: sudo unless writable
+  ASUDO=()
+  if [ ! -w /usr/share ] || [ ! -w /usr/bin ] || [ ! -w /usr/lib/systemd/user ]; then
+    command -v sudo >/dev/null || die "sudo is needed to install the agent layer (or use --no-agent-layer)"
+    if [ "$DRY" = 0 ]; then
+      sudo -n true 2>/dev/null || { echo "  sudo is needed for /usr/share/magi, /usr/bin and /usr/lib/systemd/user; you may be asked for your password."; sudo -v || die "sudo failed"; }
+    fi
+    ASUDO=(sudo)
+  fi
+  # the MAGI tree, mirroring distro/Containerfile (agent/ without its voice models: those are
+  # built per-user by agent/setup.sh, or ship in /usr/lib/magi/voice on the image)
+  run "${ASUDO[@]}" mkdir -p /usr/share/magi/wallpapers
+  run "${ASUDO[@]}" cp -f "$MAGI_DIR/install.sh" "$MAGI_DIR/uninstall.sh" "$MAGI_DIR/README.md" /usr/share/magi/
+  run "${ASUDO[@]}" mkdir -p /usr/share/magi/packages /usr/share/magi/agent
+  run "${ASUDO[@]}" cp -rf "$MAGI_DIR/packages/." /usr/share/magi/packages/
+  run "${ASUDO[@]}" cp -f "$MAGI_DIR/wallpapers/manifest.tsv" "$MAGI_DIR/wallpapers/make-blue.py" /usr/share/magi/wallpapers/
+  run "${ASUDO[@]}" cp -rf "$MAGI_DIR/agent/." /usr/share/magi/agent/
+  run "${ASUDO[@]}" rm -rf /usr/share/magi/agent/voice
+  run "${ASUDO[@]}" find /usr/share/magi -name __pycache__ -prune -exec rm -rf {} +
+  # version stamp: magi-status and the VM tests read this (image builds write the image version)
+  ver=$(git -C "$MAGI_DIR" describe --tags --always --dirty 2>/dev/null || echo install.sh-checkout)
+  if [ "$DRY" = 1 ]; then
+    printf '  %s[dry-run]%s write IMAGE_VERSION (%s) to /usr/share/magi/IMAGE_VERSION\n' "$Y" "$R" "$ver"
+  else
+    printf '%s\n' "$ver" > "$STATE/IMAGE_VERSION.new"
+    run "${ASUDO[@]}" cp -f "$STATE/IMAGE_VERSION.new" /usr/share/magi/IMAGE_VERSION
+    rm -f "$STATE/IMAGE_VERSION.new"
+    ok "tree synced to /usr/share/magi ($ver)"
+  fi
+  # every MAGI tool gets a /usr/bin link (same filter as the image build: no *.py, no magi-voice-env;
+  # __pycache__ is pruned from the tree above, but skip it here too for checkouts that still have it)
+  for f in "$MAGI_DIR"/packages/hypr/.local/bin/* "$MAGI_DIR"/agent/bin/*; do
+    case "${f##*/}" in *.py|magi-voice-env|__pycache__) continue ;; esac
+    run "${ASUDO[@]}" ln -sf "/usr/share/magi/${f#"$MAGI_DIR"/}" "/usr/bin/${f##*/}"
+  done
+  [ "$DRY" = 0 ] && ok "linked MAGI tools into /usr/bin"
+  # user units, enabled system-wide exactly like the image build (magi-agents.service is
+  # enabled per-user by `magi-agent on`, as in test-agent.sh)
+  run "${ASUDO[@]}" install -m 644 /usr/share/magi/agent/systemd/* /usr/lib/systemd/user/
+  run "${ASUDO[@]}" systemctl --global enable orch-bus.service browser-bus.service orch-doctor.timer \
+    orch-open-threads.timer tmux-restore.service tmux-snapshot.timer voice-digest.timer
+  [ "$DRY" = 0 ] && ok "user units installed and enabled"
+fi
+
+# ---------------------------------------------------------------- 10. desktop settings + theme
 step "Desktop settings and theme"
 if [ -z "$THEME" ]; then
   cur=$(basename "$(readlink "$HOME/.config/hypr/themes/current" 2>/dev/null)" 2>/dev/null || true)
@@ -365,7 +417,7 @@ if command -v xdg-mime >/dev/null && [ -z "$(xdg-mime query default inode/direct
   run xdg-mime default org.gnome.Nautilus.desktop inode/directory && ok "Nautilus opens folders"
 fi
 
-# ---------------------------------------------------------------- 10. verify
+# ---------------------------------------------------------------- 11. verify
 step "Verify"
 if [ "$DRY" = 1 ]; then skip "dry run: nothing to verify"
 else
@@ -379,6 +431,21 @@ else
   done
   [ "$bad" = 0 ] && ok "$links config links in place"
   gen=0
+  if [ "$DO_AGENT" = 1 ] && [ "$MAGI_DIR" != /usr/share/magi ]; then
+    # the distro layout the VM tests (test-agent/bus/session.sh) expect
+    for f in /usr/share/magi/IMAGE_VERSION /usr/share/magi/agent/lib/magi_agents.py \
+             /usr/share/magi/agent/ORCHESTRATOR.md /usr/share/magi/agent/bin/magi-voice-env \
+             /usr/share/magi/agent/browser-bus/examples/unread-titles.js; do
+      if [ -s "$f" ]; then gen=$((gen + 1)); else fail "missing agent-layer file: $f"; fi
+    done
+    for b in orch orch-bus magi-agent browser-bus tmux-snapshot; do
+      if [ "$(readlink -f "/usr/bin/$b" 2>/dev/null)" = "/usr/share/magi/agent/bin/$b" ]; then gen=$((gen + 1))
+      else fail "missing /usr/bin link: $b"; fi
+    done
+    for u in orch-bus.service browser-bus.service orch-doctor.timer tmux-restore.service; do
+      if [ -f "/usr/lib/systemd/user/$u" ]; then gen=$((gen + 1)); else fail "missing user unit: $u"; fi
+    done
+  fi
   for f in .config/mako/config .config/wofi/style.css .config/hypr/hyprlock.conf .config/hypr/hyprpaper.conf \
            .config/hypr/hyprtoolkit.conf .config/xsettingsd/xsettingsd.conf .cache/eva-lock.png \
            .local/share/themes/EVA/gtk-3.0/gtk.css .local/share/themes/EVA/gtk-4.0/gtk.css \
