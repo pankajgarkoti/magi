@@ -24,6 +24,29 @@ STOW_PACKAGES=(hypr gtk ranger alacritty tmux shell)
 echo "==> removing MAGI config links"
 run stow --no-folding -d "$PK" -t "$HOME" -D "${STOW_PACKAGES[@]}"
 
+echo "==> removing MAGI distro-layout files (/usr/share/magi, /usr/bin links, user units)"
+if [ "$MAGI_DIR" = /usr/share/magi ]; then
+  echo "    running from /usr/share/magi itself (distro image?): leaving the image tree in place"
+else
+  USUDO=()
+  if [ ! -w /usr/share ] || [ ! -w /usr/bin ] || [ ! -w /usr/lib/systemd/user ]; then
+    if command -v sudo >/dev/null && { [ "$DRY" = 1 ] || sudo -n true 2>/dev/null; }; then USUDO=(sudo)
+    else echo "    no passwordless sudo: leaving /usr/share/magi, /usr/bin links and user units in place"; fi
+  fi
+  if [ "${#USUDO[@]}" -gt 0 ] || { [ -w /usr/share ] && [ -w /usr/bin ] && [ -w /usr/lib/systemd/user ]; }; then
+    for f in /usr/bin/*; do
+      [ -L "$f" ] || continue
+      case "$(readlink -f "$f" 2>/dev/null)" in /usr/share/magi/*) run "${USUDO[@]}" rm -f "$f" ;; esac
+    done
+    run "${USUDO[@]}" systemctl --global disable orch-bus.service browser-bus.service orch-doctor.timer \
+      orch-open-threads.timer tmux-restore.service tmux-snapshot.timer voice-digest.timer 2>/dev/null || true
+    for u in "$MAGI_DIR"/agent/systemd/*; do
+      [ -e "/usr/lib/systemd/user/$(basename "$u")" ] && run "${USUDO[@]}" rm -f "/usr/lib/systemd/user/$(basename "$u")"
+    done
+    [ -d /usr/share/magi ] && run "${USUDO[@]}" rm -rf /usr/share/magi
+  fi
+fi
+
 echo "==> removing files MAGI generated"
 for f in .config/mako/config .config/wofi/style.css .config/hypr/hyprlock.conf .config/hypr/hyprpaper.conf \
          .config/hypr/hyprtoolkit.conf .config/xsettingsd/xsettingsd.conf .config/hypr/themes/current .config/waybar/colors.css \
