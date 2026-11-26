@@ -110,7 +110,7 @@ def dispatch():
                 OFFSET.write_text(str(size))
         except Exception as e:  # never die: systemd would restart us, but keep the log readable
             print("dispatch error:", e, file=sys.stderr, flush=True)
-        time.sleep(2)
+        time.sleep(15)  # event-gated: only wakes the orchestrator on new events; 15s is plenty
 
 
 def main(argv):
