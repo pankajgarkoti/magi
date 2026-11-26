@@ -1,0 +1,81 @@
+{
+  "domain": "127.0.0.1",
+  "name": "local-fill-form",
+  "description": "Fill the local reflex test form, upload a file, submit, and verify echoed values.",
+  "when_to_use": "Practice reflex on localhost test page only.",
+  "entry_url": "http://127.0.0.1:8765/",
+  "inputs": {
+    "name": {
+      "kind": "string",
+      "required": true
+    },
+    "email": {
+      "kind": "string",
+      "required": true
+    },
+    "message": {
+      "kind": "string",
+      "required": true
+    },
+    "file": {
+      "kind": "file_paths",
+      "required": true,
+      "min": 1
+    }
+  },
+  "entry_steady": {
+    "type": "dom_stable",
+    "quiet_ms": 400,
+    "timeout_ms": 8000
+  },
+  "phases": [
+    {
+      "name": "fill",
+      "target_assert": "await h.eval('!!document.querySelector(\"#test-form\") && !!document.querySelector(\"#name\")')",
+      "reflex_script": "await h.eval(\"(() => { const el=document.querySelector('#name'); if(!el) return false; el.focus(); el.value=\" + JSON.stringify(ARGS.name) + \"; el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); return true; })()\");\nawait h.eval(\"(() => { const el=document.querySelector('#email'); if(!el) return false; el.focus(); el.value=\" + JSON.stringify(ARGS.email) + \"; el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); return true; })()\");\nawait h.eval(\"(() => { const el=document.querySelector('#message'); if(!el) return false; el.focus(); el.value=\" + JSON.stringify(ARGS.message) + \"; el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); return true; })()\");\nreturn {ok: true};",
+      "verify_script": "const vals = await h.eval('({n:document.querySelector(\"#name\").value,e:document.querySelector(\"#email\").value,m:document.querySelector(\"#message\").value})'); const ok = vals.n===ARGS.name && vals.e===ARGS.email && vals.m===ARGS.message; return {ok, why: ok ? '' : 'values mismatch: '+JSON.stringify(vals)};",
+      "steady_rule": {
+        "type": "dom_stable",
+        "quiet_ms": 300,
+        "timeout_ms": 5000
+      },
+      "timeout_ms": 30000
+    },
+    {
+      "name": "upload",
+      "target_assert": "await h.eval('!!document.querySelector(\"input#file[type=file]\")')",
+      "reflex_script": "await h.files([ARGS.file[0]], {sel: '#file'}); return {ok: true};",
+      "verify_script": "const n = await h.eval('document.querySelector(\"#file\").files.length'); return {ok: n>=1, why: 'file count='+n};",
+      "steady_rule": {
+        "type": "dom_stable",
+        "quiet_ms": 300,
+        "timeout_ms": 5000
+      },
+      "timeout_ms": 30000
+    },
+    {
+      "name": "submit",
+      "target_assert": "await h.eval('!!document.querySelector(\"#submit\")')",
+      "reflex_script": "await h.click('#submit', {tries: 3, gap: 200}); return {ok: true};",
+      "verify_script": "const shown = await h.eval('document.querySelector(\"#result\")?.classList.contains(\"show\")'); return {ok: !!shown, why: shown ? '' : 'result not shown'};",
+      "steady_rule": {
+        "type": "dom_stable",
+        "quiet_ms": 300,
+        "timeout_ms": 5000
+      },
+      "timeout_ms": 30000
+    },
+    {
+      "name": "verify-echo",
+      "target_assert": "await h.eval('document.querySelector(\"#result\")?.dataset.submitted===\"1\"')",
+      "reflex_script": "return {ok: true};",
+      "verify_script": "const out = await h.eval('({n:document.querySelector(\"#out-name\").textContent,e:document.querySelector(\"#out-email\").textContent,m:document.querySelector(\"#out-message\").textContent,f:document.querySelector(\"#out-file\").textContent})'); const want = ARGS.file[0].split('/').pop(); const ok = out.n===ARGS.name && out.e===ARGS.email && out.m===ARGS.message && out.f===want; return {ok, why: ok ? '' : 'echo mismatch: '+JSON.stringify(out)+' wantFile='+want};",
+      "steady_rule": {
+        "type": "dom_stable",
+        "quiet_ms": 200,
+        "timeout_ms": 5000
+      },
+      "timeout_ms": 30000
+    }
+  ]
+}

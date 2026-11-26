@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>magi-reflex testpage</title>
+  <style>
+    body { font-family: sans-serif; margin: 2rem; }
+    label { display: block; margin-top: .75rem; }
+    input, textarea { width: 24rem; max-width: 100%; }
+    #result { margin-top: 1rem; padding: 1rem; border: 1px solid #ccc; display: none; }
+    #result.show { display: block; }
+  </style>
+</head>
+<body>
+  <h1>Reflex Test Form</h1>
+  <form id="test-form">
+    <label>Name <input id="name" name="name" type="text"></label>
+    <label>Email <input id="email" name="email" type="email"></label>
+    <label>Message <textarea id="message" name="message" rows="4"></textarea></label>
+    <label>File <input id="file" name="file" type="file"></label>
+    <button id="submit" type="submit">Submit</button>
+  </form>
+  <div id="result" aria-live="polite">
+    <h2>Submitted</h2>
+    <dl>
+      <dt>Name</dt><dd id="out-name"></dd>
+      <dt>Email</dt><dd id="out-email"></dd>
+      <dt>Message</dt><dd id="out-message"></dd>
+      <dt>File</dt><dd id="out-file"></dd>
+    </dl>
+  </div>
+  <script>
+    document.getElementById('test-form').addEventListener('submit', function (e) {
+      e.preventDefault();
+      const name = document.getElementById('name').value;
+      const email = document.getElementById('email').value;
+      const message = document.getElementById('message').value;
+      const fileInput = document.getElementById('file');
+      const fileName = fileInput.files && fileInput.files[0] ? fileInput.files[0].name : '';
+      document.getElementById('out-name').textContent = name;
+      document.getElementById('out-email').textContent = email;
+      document.getElementById('out-message').textContent = message;
+      document.getElementById('out-file').textContent = fileName;
+      document.getElementById('result').classList.add('show');
+      document.getElementById('result').dataset.submitted = '1';
+    });
+  </script>
+</body>
+</html>
