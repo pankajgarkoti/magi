@@ -811,14 +811,19 @@ def deliver_to_orchestrator(text, wait=600, poll=3):
         o = next((r for r in agents(c) if r["session"] == SESSION and r["window"] == "orchestrator"), None)
         if o and o["state"] == "idle":
             if o.get("agent") == "opencode" and o.get("session_id"):
+                # POST /api/session/{id}/prompt queues a server-side message (it returns once
+                # queued, not when the agent finishes) — it never touches the TUI input box,
+                # so unlike the tmux path it cannot clobber a typed draft: no draft check here.
                 try:
                     body = json.dumps({"text": text})
                     r = subprocess.run(["opencode", "api", "post", f"/api/session/{o['session_id']}/prompt", "-d", body],
                                        capture_output=True, text=True, timeout=15)
                     if r.returncode == 0:
+                        _log(f"orchestrator delivery via prompt API (session {o['session_id']})")
                         return True
-                except Exception:
-                    pass
+                    _log(f"prompt API failed rc={r.returncode} err={(r.stderr or '').strip()[:200]}; falling back to tmux")
+                except Exception as e:
+                    _log(f"prompt API error {type(e).__name__}: {e}; falling back to tmux")
             a = get(o["agent"], c=c)
             if not a.draft(o["pane"]):
                 subprocess.run(["tmux", "send-keys", "-t", o["pane"], "-l", text])
