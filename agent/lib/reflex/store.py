@@ -5,6 +5,7 @@ Owner-directed design (24-25 Nov): NOT JSON files, NOT a growing markdown.
   reflexes — keyed (domain, name), status lifecycle kept from FlowPilot:
     candidate  new script, never replayed successfully yet
     active     proven by >= 1 successful replay
+    stale      network signature drifted; replay refuses until sealed again
     broken     demoted after consecutive failures; never offered to lookup
   A regenerate for an ACTIVE reflex waits in the `candidate` column as a full
   next-version doc and never clobbers the serving one; the next successful
@@ -125,9 +126,18 @@ def validate_doc(doc):
             if not ph.get(k):
                 raise StoreError(f"phase {i} missing '{k}'")
         ph.setdefault("steady_rule", {"type": "dom_stable", "quiet_ms": 700, "timeout_ms": 8000})
+        ph.setdefault("net_filter", None)
         ph.setdefault("net_signature", None)
         ph.setdefault("verify_poll", None)
         ph.setdefault("timeout_ms", 90000)
+        nf = ph.get("net_filter")
+        if nf is not None and (not isinstance(nf, list)
+                               or not all(isinstance(p, str) and p for p in nf)):
+            raise StoreError(f"phase {i} net_filter must be a list of non-empty URL patterns")
+        ns = ph.get("net_signature")
+        if ns is not None and (not isinstance(ns, dict)
+                               or not str(ns.get("hash") or "").startswith("sha256:")):
+            raise StoreError(f"phase {i} net_signature must be null or an object with a sha256 hash")
     doc.setdefault("description", "")
     doc.setdefault("when_to_use", "")
     doc.setdefault("inputs", {})
@@ -192,12 +202,16 @@ def install(conn, doc):
         return f"parked {domain}/{name} next-version as candidate; active version keeps serving until the candidate's first successful replay"
     cur.execute(
         "UPDATE reflexes SET entry_url=?, description=?, when_to_use=?, phases=?, inputs=?,"
-        " pause_after=?, tags=?, status='candidate', consecutive_failures=0, updated_at=?"
-        " WHERE domain=? AND name=?",
+        " pause_after=?, tags=?, candidate=NULL, status='candidate', consecutive_failures=0,"
+        " updated_at=? WHERE domain=? AND name=?",
         (content["entry_url"], content["description"], content["when_to_use"], content["phases"],
          content["inputs"], content["pause_after"], content["tags"], _now(), domain, name))
     conn.commit()
     return f"updated {domain}/{name} in place as candidate (row was {row['status']}; never served successfully)"
+
+
+def _content(doc):
+    return {k: (json.dumps(doc[k]) if k in ("phases", "inputs") else doc[k]) for k in CONTENT_COLS}
 
 
 def mark_success(conn, domain, name, served_candidate):
@@ -210,14 +224,14 @@ def mark_success(conn, domain, name, served_candidate):
                 " WHERE domain=? AND name=?", (_now(), domain, name))
     if served_candidate and row["candidate"]:
         doc = json.loads(row["candidate"])
-        content = {k: (json.dumps(doc[k]) if k in ("phases", "inputs") else doc[k]) for k in CONTENT_COLS}
+        content = _content(doc)
         cur.execute(
             "UPDATE reflexes SET entry_url=?, description=?, when_to_use=?, phases=?, inputs=?,"
             " pause_after=?, tags=?, candidate=NULL, status='active', updated_at=?"
             " WHERE domain=? AND name=?",
             (content["entry_url"], content["description"], content["when_to_use"], content["phases"],
              content["inputs"], content["pause_after"], content["tags"], _now(), domain, name))
-    elif row["status"] == "candidate":
+    elif row["status"] in ("candidate", "stale"):
         cur.execute("UPDATE reflexes SET status='active', updated_at=? WHERE domain=? AND name=?",
                      (_now(), domain, name))
     conn.commit()
@@ -240,6 +254,61 @@ def mark_failure(conn, domain, name, served_candidate):
         elif not row["candidate"]:
             cur.execute("UPDATE reflexes SET status='broken', updated_at=? WHERE domain=? AND name=?",
                          (_now(), domain, name))
+    conn.commit()
+
+
+def mark_stale(conn, domain, name, served_candidate):
+    """A network-signature drift. The serving version is no longer trusted: a
+    waiting candidate is dropped (it was not proven either), otherwise the row
+    goes `stale` so replay refuses and suggest stops offering it."""
+    row = get(conn, domain, name)
+    if row is None:
+        return
+    cur = conn.cursor()
+    cur.execute("UPDATE reflexes SET failures=failures+1, consecutive_failures=0, updated_at=?"
+                " WHERE domain=? AND name=?", (_now(), domain, name))
+    row = get(conn, domain, name)
+    if served_candidate and row["candidate"]:
+        cur.execute("UPDATE reflexes SET candidate=NULL, updated_at=? WHERE domain=? AND name=?",
+                     (_now(), domain, name))
+    else:
+        cur.execute("UPDATE reflexes SET status='stale', updated_at=? WHERE domain=? AND name=?",
+                     (_now(), domain, name))
+    conn.commit()
+
+
+def update_signatures(conn, domain, name, signatures, served_candidate):
+    """Seal: a verified replay captured fresh signatures for named phases.
+
+    Signature re-learn changes no script, so it updates the verified version in
+    place and returns it to active. A waiting candidate is promoted (its replay
+    is the one that just verified), exactly like mark_success.
+    """
+    row = get(conn, domain, name)
+    if row is None:
+        return
+    cur = conn.cursor()
+    if served_candidate and row["candidate"]:
+        doc = json.loads(row["candidate"])
+        for ph in doc.get("phases") or []:
+            if ph.get("name") in signatures:
+                ph["net_signature"] = signatures[ph["name"]]
+        content = _content(doc)
+        cur.execute(
+            "UPDATE reflexes SET entry_url=?, description=?, when_to_use=?, phases=?, inputs=?,"
+            " pause_after=?, tags=?, candidate=NULL, status='active', successes=successes+1,"
+            " consecutive_failures=0, updated_at=? WHERE domain=? AND name=?",
+            (content["entry_url"], content["description"], content["when_to_use"], content["phases"],
+             content["inputs"], content["pause_after"], content["tags"], _now(), domain, name))
+    else:
+        doc = row_doc(row)
+        for ph in doc.get("phases") or []:
+            if ph.get("name") in signatures:
+                ph["net_signature"] = signatures[ph["name"]]
+        cur.execute(
+            "UPDATE reflexes SET phases=?, status='active', successes=successes+1,"
+            " consecutive_failures=0, updated_at=? WHERE domain=? AND name=?",
+            (json.dumps(doc["phases"]), _now(), domain, name))
     conn.commit()
 
 
@@ -286,7 +355,7 @@ def release_lease(conn, domain, name, lease_by):
 
 def suggest(conn, url):
     """JIT discovery (no catalog file): reflexes applicable to a URL's domain,
-    active first, then by proven successes. Broken ones are never offered."""
+    active first, then by proven successes. Broken and stale ones are never offered."""
     try:
         from urllib.parse import urlparse
         host = (urlparse(url).hostname or "").lower()
@@ -295,7 +364,7 @@ def suggest(conn, url):
     if not host:
         raise StoreError(f"cannot read a domain from {url!r}")
     return conn.execute(
-        "SELECT * FROM reflexes WHERE status != 'broken'"
+        "SELECT * FROM reflexes WHERE status NOT IN ('broken', 'stale')"
         " AND (domain = ? OR ? LIKE '%.' || domain)"
         " ORDER BY (status = 'active') DESC, (successes - failures) DESC, name",
         (host, host)).fetchall()

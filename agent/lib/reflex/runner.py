@@ -47,7 +47,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import store
+from . import signature, store
 from .cdp import CDP, CDPError, CDPClosed
 
 WORLD = "magi-reflex"
@@ -171,6 +171,8 @@ class OwnTab:
         self._world_lock = threading.Lock()
         self._reqs = []
         self._req_lock = threading.Lock()
+        self._navs = []
+        self._nav_lock = threading.Lock()
         self._chooser = None  # (backendNodeId, ts)
         self._dead = False
         self._last_load = 0.0
@@ -217,11 +219,25 @@ class OwnTab:
             return
         m = msg.get("method")
         if m == "Network.requestWillBeSent":
+            p = msg.get("params") or {}
+            req = p.get("request") or {}
             with self._req_lock:
-                self._reqs.append(time.time())
+                self._reqs.append({
+                    "t": time.time(),
+                    "method": req.get("method") or "GET",
+                    "url": req.get("url") or "",
+                    "type": p.get("type") or "",
+                })
         elif m == "Page.loadEventFired":
             self._last_load = time.time()
             self._load_evt.set()
+        elif m == "Page.frameStartedNavigating":
+            # a different-document navigation may be scheduled by the action
+            # (form POST) *after* the reflex script returns; the drift window
+            # must not close before its request is on the wire
+            if (msg.get("params") or {}).get("navigationType") == "differentDocument":
+                with self._nav_lock:
+                    self._navs.append(time.time())
         elif m == "Page.fileChooserOpened":
             self._chooser = (msg["params"].get("backendNodeId"), time.time())
         elif m == "Runtime.executionContextsCleared":
@@ -417,6 +433,37 @@ class OwnTab:
     def eval_world(self, expr, timeout=30):
         return self._eval(self.ensure_world(), expr, timeout)
 
+    # -- request window (drift signatures) ---------------------------------
+    def req_mark(self):
+        with self._req_lock:
+            return len(self._reqs)
+
+    def reqs_since(self, mark):
+        with self._req_lock:
+            return list(self._reqs[mark:])
+
+    def nav_since(self, t0):
+        with self._nav_lock:
+            return max((t for t in self._navs if t >= t0), default=0.0)
+
+    def wait_navigation_since(self, t0, grace=0.75, timeout=NAV_TIMEOUT_S):
+        """Wait briefly for an action-scheduled different-document navigation.
+
+        A form POST click can return before Chrome starts the navigation, so a
+        DOM-stable steady check would otherwise fire in the OLD document and the
+        phase's request would miss the drift window. If a navigation appears,
+        wait for its load event; return True when one was seen.
+        """
+        deadline = time.time() + grace
+        while time.time() < deadline:
+            nav = self.nav_since(t0)
+            if nav:
+                return self.wait_load_since(nav, timeout)
+            if self._dead:
+                return False
+            time.sleep(0.05)
+        return False
+
     # -- navigation + steady ----------------------------------------------
     def navigate(self, url):
         self._ctx = None
@@ -452,7 +499,7 @@ class OwnTab:
             t0 = time.time()
             while time.time() < deadline:
                 with self._req_lock:
-                    last = self._reqs[-1] if self._reqs else t0
+                    last = self._reqs[-1]["t"] if self._reqs else t0
                 if time.time() - last >= quiet:
                     return {"fired": round((time.time() - t0) * 1000), "timeout": False}
                 time.sleep(0.1)
@@ -533,10 +580,16 @@ def emit_bus(name, line):
         print(f"orch-bus emit failed: {e}", flush=True)
 
 
-def run_reflex(doc, args, verbose=False, trace_echo=False):
-    """Replay one reflex doc. Returns {ok, elapsed_ms, phase?, why?, trace}.
+def run_reflex(doc, args, verbose=False, trace_echo=False,
+               capture=False, persist=True, announce=True):
+    """Replay one reflex doc. Returns {ok, elapsed_ms, phase?, why?, stale?, signatures, trace}.
 
     Own tab only; the tab is closed in every path. One bus line on completion.
+
+    capture=True is the seal/re-learn mode: do not compare stored signatures, just
+    record fresh ones and return them in `signatures`. persist=False leaves the
+    lifecycle to the caller (cmd_seal updates it after installing the signatures).
+    announce=False suppresses the bus line so the caller can emit its own one.
     """
     name = doc["name"]
     phases = doc["phases"]
@@ -545,6 +598,8 @@ def run_reflex(doc, args, verbose=False, trace_echo=False):
     tracer = Tracer(trace_path, echo=trace_echo)
     t_run = time.time()
     fail_phase = fail_why = None
+    stale = False
+    signatures = {}
     phase_rows = []
     cdp = None
     tab = None
@@ -638,6 +693,7 @@ def run_reflex(doc, args, verbose=False, trace_echo=False):
         for ph in phases:
             ph_name = ph["name"]
             t_ph = time.time()
+            req_mark = tab.req_mark()  # drift window: this phase's action -> steady
             if tab._dead:
                 raise RunFail(ph_name, "own tab died")
             try:
@@ -667,9 +723,26 @@ def run_reflex(doc, args, verbose=False, trace_echo=False):
                     why_ta = None
             if why:
                 raise RunFail(ph_name, why)
+            # an action can schedule a navigation (form POST) and return before
+            # Chrome starts it; wait for that navigation + load before steady so
+            # the phase's network request lands inside the drift window
+            if tab.wait_navigation_since(t_ph):
+                tracer.note("action navigation settled", phase=ph_name)
             st = tab.steady(ph.get("steady_rule"), note=ph_name)
             tracer.note("steady", phase=ph_name, **st)
             enforce_entry_domain(tab, doc, ph_name)
+
+            # v2a drift gate: fingerprint only the phase's declared calls, after
+            # the action has settled and before verify is trusted. A mismatch is
+            # STALE — the page's API contract changed, so do not report success.
+            obs, drift = signature.check_phase(ph, tab.reqs_since(req_mark))
+            if obs is not None:
+                signatures[ph_name] = obs
+                tracer.note("net signature", phase=ph_name, count=obs["count"],
+                            hash=obs["hash"][:23], **(dict(drift=drift) if drift else {}))
+            if drift and not capture:
+                raise RunFail(ph_name, f"STALE: {drift}")
+
             poll = ph.get("verify_poll") or {}
             deadline = time.time() + (poll.get("timeout_ms", 0) / 1000.0)
             interval = poll.get("interval_ms", 1500) / 1000.0
@@ -694,6 +767,7 @@ def run_reflex(doc, args, verbose=False, trace_echo=False):
                 time.sleep(doc["pause_after"] / 1000.0)
     except RunFail as e:
         fail_phase, fail_why = e.phase, e.why
+        stale = bool(fail_why and fail_why.startswith("STALE:"))
     except (CDPError, CDPClosed) as e:
         fail_phase, fail_why = "(connect)", f"CDP: {_head(str(e), 200)}"
     finally:
@@ -713,6 +787,7 @@ def run_reflex(doc, args, verbose=False, trace_echo=False):
     ok = fail_phase is None
 
     # store updates + bounded audit (WAL db, shared with other agents)
+    served_candidate = doc.get("_served_candidate", False)
     try:
         conn = store.connect()
         for ph_name, ph_ok, ph_ms in phase_rows:
@@ -720,21 +795,30 @@ def run_reflex(doc, args, verbose=False, trace_echo=False):
         if fail_phase:
             store.record_run(conn, name, fail_phase, False, elapsed_ms, True)
         store.record_run(conn, name, "<run>", ok, elapsed_ms, True)
-        if ok:
-            store.mark_success(conn, doc["domain"], name, doc.get("_served_candidate", False))
-        else:
-            store.mark_failure(conn, doc["domain"], name, doc.get("_served_candidate", False))
+        if persist:
+            if ok:
+                store.mark_success(conn, doc["domain"], name, served_candidate)
+            elif stale:
+                store.mark_stale(conn, doc["domain"], name, served_candidate)
+            else:
+                store.mark_failure(conn, doc["domain"], name, served_candidate)
         conn.close()
     except store.StoreError as e:
         print(f"store update failed: {e}", flush=True)
 
-    line = (f"magi-reflex {name} ok {elapsed_ms}ms" if ok
-            else f"magi-reflex {name} FAILED at {fail_phase}: {fail_why}")
-    tracer.note("bus emit", line=line)
+    if ok:
+        line = f"magi-reflex {name} ok {elapsed_ms}ms"
+    elif stale:
+        why = fail_why[7:] if fail_why.startswith("STALE: ") else fail_why
+        line = f"magi-reflex {name} STALE at {fail_phase}: {why}"
+    else:
+        line = f"magi-reflex {name} FAILED at {fail_phase}: {fail_why}"
+    if announce:
+        tracer.note("bus emit", line=line)
+        emit_bus(name, line)
     tracer.close()
-    emit_bus(name, line)
     if verbose:
         print(line, flush=True)
         print(f"trace: {trace_path}", flush=True)
     return {"ok": ok, "elapsed_ms": elapsed_ms, "phase": fail_phase, "why": fail_why,
-            "line": line, "trace": str(trace_path)}
+            "stale": stale, "signatures": signatures, "line": line, "trace": str(trace_path)}

@@ -34,6 +34,9 @@
     },
     {
       "name": "submit",
+      "net_filter": [
+        "/authenticate"
+      ],
       "target_assert": "await h.eval(\"!!document.querySelector('form#login button[type=submit]')\")",
       "reflex_script": "await h.click('form#login button[type=\"submit\"]', {tries: 3, gap: 300}); return {ok:true};",
       "verify_script": "const ok = await h.eval(\"location.pathname==='/secure' && !!document.querySelector('.flash.success')\"); const txt = await h.eval('document.querySelector(\".flash\")?.innerText || \"\"'); return {ok: !!ok, why: ok ? '' : 'no success flash: '+txt.slice(0,80)};",

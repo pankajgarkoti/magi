@@ -42,6 +42,9 @@
     },
     {
       "name": "submit",
+      "net_filter": [
+        "/post"
+      ],
       "target_assert": "await h.eval(\"!!document.querySelector('form[action*=post] button')\")",
       "reflex_script": "await h.click('form[action=\"/post\"] button', {tries: 3, gap: 300}); return {ok: true};",
       "verify_script": "const txt = await h.eval('document.body.innerText'); let j=null; try{j=JSON.parse(txt);}catch(e){} const ok = !!j && !!j.form && j.form.custname===ARGS.custname && j.form.custemail===ARGS.custemail && j.form.comments===ARGS.comments; return {ok, why: ok ? '' : 'echoed JSON missing values'};",

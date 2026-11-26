@@ -10,7 +10,8 @@ Reflexes live in the live SQLite store `~/.local/state/magi/reflexes.db` (WAL, `
 shared across tabs and agent instances). The schema is two tables:
 
 - `reflexes` — keyed `(domain, name)`. Status lifecycle: `candidate` (new, never replayed
-  successfully), `active` (proven by >= 1 successful replay), `broken` (demoted after consecutive
+  successfully), `active` (proven by >= 1 successful replay), `stale` (network signature drifted;
+  replay refuses and lookup stops offering it until `seal`), `broken` (demoted after consecutive
   failures; never offered to lookup). A regenerated script for an active reflex waits in
   `candidate` as a next-version doc and never clobbers the serving one; the next successful replay
   promotes it. `owner_registered` arms a reflex outside the harmless-surface allowlist.
@@ -60,6 +61,29 @@ steady → verify, then closes its tab on every exit path. Any failure stops the
 bus line, `orch-bus emit magi-reflex "magi-reflex <name> FAILED at <phase>: <why>"`; success emits
 one line with elapsed ms. The store records per-phase and run audit rows with `zero_model_calls=1`.
 
+## Drift detection (v2a)
+
+A phase may declare `net_filter`: a positive list of URL substrings or globs for the API calls
+that actually matter (`Document`, `XHR`, and `Fetch` requests only). While the phase runs, the
+runner records those requests from the action through steady state, drops the query string, and
+normalizes opaque path segments (numbers, UUIDs, long hex/base64-ish ids) to `:id`. The ordered
+`METHOD /path` lines are hashed (`sha256`); `net_filter: []` means "this phase should make no
+matching call".
+
+`net_signature` stays `null` until `magi-reflex seal NAME` captures it from a verified replay.
+Once sealed, every replay compares the observed signature before verify is trusted. A mismatch
+fails the phase as `STALE` and emits one bus line:
+
+```
+magi-reflex <name> STALE at <phase>: net signature drift: expected …
+```
+
+The reflex becomes `stale`: `run` refuses it and `suggest` no longer offers it. `magi-reflex seal
+NAME` runs the flow again in capture mode (verify still gates it), writes the fresh signatures,
+and returns the reflex to `active`. This is signature re-learning only — an agentic re-learn of a
+changed script remains a later slice. Filters must stay narrow: an unfiltered hash of a chatty
+app's traffic is noise, not a signature.
+
 ## Steady state
 
 The default steady rule is DOM-stable: wait for no DOM mutation for `quiet_ms` before verify runs.
@@ -88,6 +112,7 @@ magi-reflex show NAME [--json]        full doc (phases, scripts, inputs, runs)
 magi-reflex suggest --url URL         JIT discovery for a page's domain (anti-bias header)
 magi-reflex install FILE.json         install/refresh a reflex doc (candidate lifecycle)
 magi-reflex run NAME [--args JSON] [--trace] [--version active|candidate]
+magi-reflex seal NAME [--args JSON]   capture/re-learn per-phase net signatures
 magi-reflex lease NAME --by AGENT [--minutes N] [--release]
 magi-reflex dogma ...                 re-measure steady-state detectors
 ```
@@ -104,5 +129,6 @@ to 127.0.0.1:9222, evaluates stored scripts, reads local files, and emits one or
 `--trace` logs every CDP frame sent or received — the complete activity record of the process.
 
 Never learns or runs flows that type credentials, OTPs, or solve challenges — such phases end with
-an ASK OWNER handoff. Learn (recording a deliberate pass), drift detection, and arming on bus
-events are later slices per `notes/orchestrator/magi-reflex-plan.md`.
+an ASK OWNER handoff. Drift detection + signature re-seal are implemented (v2a above). The
+agentic learn listener/script re-learn and arming on bus events remain later slices per
+`notes/orchestrator/magi-reflex-plan.md`.
