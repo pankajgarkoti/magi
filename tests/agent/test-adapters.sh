@@ -4,7 +4,7 @@
 # the bar module and the AGENTS page data, sub-agents, snapshot -> tmux restart -> restore with
 # resume, and the idle reaper (busy, asking and a typed draft are never closed).
 #
-#   tests/agent/test-adapters.sh [claude opencode codex custom]   (default: all four)
+#   tests/agent/test-adapters.sh [claude opencode codex gemini custom]   (default: all five)
 #
 # Runs anywhere with tmux and python3, in a throwaway HOME with its own tmux server; it does not
 # touch your tmux, systemd units or agent configs. No account needed.
@@ -42,6 +42,8 @@ run_adapter() {
   LOG=$HOME/.magi-stub/$name.log
   printf 'ENABLED=1\nVOICE=0\nCONSOLE_AT_LOGIN=0\n' > "$XDG_CONFIG_HOME/magi/agent.conf"
   export MAGI_EVENT_SETTLE=3
+  # don't let a low-memory host silently raise the reaper's idle threshold above REAP_IDLE_MIN
+  export REAP_LOW_MEM_MB=0
   echo "Fix the failing test in proj." > "$T/brief.txt"
 
   if [ "$name" = custom ]; then
@@ -61,6 +63,8 @@ run_adapter() {
     fi
   fi
 
+  # Gemini has no non-interactive login-status command: the stub counts an API key as signed in.
+  [ "$name" = gemini ] && export GEMINI_API_KEY=stub-test-key
   magi-agent start
   tmux has-session -t =magi 2>/dev/null || { fail "tmux session magi did not start"; return; }
   check "tmux session magi, window 1 is the orchestrator" bash -c "[ \"\$(tmux list-windows -t =magi -F '#{window_index} #W' | awk '\$1==1{print \$2}')\" = orchestrator ]"
@@ -126,6 +130,7 @@ run_adapter() {
     claude)   grep -q "'--resume', '$osid'" <<< "$after" && grep -q "'--resume', '$ssid'" <<< "$after" && pass "restore: claude --resume <same ids>" || fail "restore argv: $after" ;;
     opencode) grep -q "'--session', '$osid'" <<< "$after" && grep -q "'--session', '$ssid'" <<< "$after" && pass "restore: opencode --session <same ids>" || fail "restore argv: $after" ;;
     codex)    grep -q "\['resume', '$osid'" <<< "$after" && grep -q "\['resume', '$ssid'" <<< "$after" && pass "restore: codex resume <same ids>" || fail "restore argv: $after" ;;
+    gemini)   grep -q "'--resume', '$osid'" <<< "$after" && grep -q "'--resume', '$ssid'" <<< "$after" && pass "restore: gemini --resume <same ids>" || fail "restore argv: $after" ;;
     custom)   [ "$osid" = None ] && ! grep -q resume <<< "$after" && pass "restore: custom agent (no resume) started fresh" || fail "restore: sid=$osid $after" ;;
   esac
   check "orchestrator IDLE after restore" waitfor 10 is_orch IDLE
@@ -163,7 +168,7 @@ run_adapter() {
   [ "${KEEP:-0}" = 1 ] || rm -rf "$T" "$TMUX_TMPDIR"
 }
 
-for a in "${@:-claude opencode codex custom}"; do
+for a in "${@:-claude opencode codex gemini custom}"; do
   for b in $a; do run_adapter "$b"; done
 done
 echo

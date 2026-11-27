@@ -55,8 +55,8 @@ magi-agent spawn fix-login ~/code/app /path/to/brief.txt
 ```
 
 - `spawn` opens window `fix-login` in session `magi`, starts the user's configured agent for
-  sub-agents in that folder, and tells it to read the brief. `--agent claude|opencode|codex|custom`
-  picks another one for this window.
+  sub-agents in that folder, and tells it to read the brief. `--agent claude|opencode|codex|gemini|custom`
+  picks another one for this window (`gemini` reads `GEMINI.md`; the others read `AGENTS.md`).
 - Write the brief to a file and pass it in, rather than typing a long prompt into the pane.
 - A new folder can show a "trust this folder?" prompt (Claude Code and Codex both have one). For folders the user owns and has sent you to, answer it yourself. Tool-permission prompts for risky actions (production writes, sending messages, deleting data) are different: those go to the user.
 - **Check every new agent about 10 seconds after launch** with `tmux capture-pane`. An agent sitting on a trust or permission prompt does nothing, silently, for as long as nobody looks.
@@ -72,7 +72,8 @@ magi-agent spawn fix-login ~/code/app /path/to/brief.txt
 
 ## Closing agents
 
-Each idle agent session holds a few hundred MB. A dozen of them will push a laptop into swap. When an agent reports done and you've captured its result, close its window yourself. Never close a pane that is mid-task, waiting on a prompt, or holding a typed draft. Most sessions can be reopened (`claude --resume <id>`, `opencode --session <id>`, `codex resume <id>`), so don't keep them open "just in case", and don't reopen old ones in bulk.
+Each idle agent session holds a few hundred MB. A dozen of them will push a laptop into swap. When an agent reports done and you've captured its result, close its window yourself. Never close a pane that is mid-task, waiting on a prompt, or holding a typed draft. Most sessions can be reopened (`claude --resume <id>`, `opencode --session <id>`, `codex resume <id>`,
+`gemini --resume <id>`), so don't keep them open "just in case", and don't reopen old ones in bulk.
 
 The optional `tmux-reap-stale` timer does this automatically for sessions idle over an hour, and logs every close with its resume command (`~/.local/state/tmux-reap/closed.log`). Mention closures in status reports.
 
@@ -84,9 +85,9 @@ tmux capture-pane -p -t %3 -S -40
 tmux send-keys -t %3 -l "the message"; sleep 0.5; tmux send-keys -t %3 Enter
 ```
 
-This works the same for every agent. Before sending, check the target's input box with `tmux capture-pane -p -e -t %3 | tail -8 | cat -v` (the prompt is `❯` in Claude Code, `›` in Codex, the `┃` box in opencode). Dim text (`[2m`) is only a suggestion, so typing replaces it. Plain text is the user's draft: never type into it.
+This works the same for every agent. Before sending, check the target's input box with `tmux capture-pane -p -e -t %3 | tail -8 | cat -v` (the prompt is `❯` in Claude Code, `›` in Codex, `>` in Gemini CLI, the `┃` box in opencode). Dim text (`[2m`) is only a suggestion, so typing replaces it. Plain text is the user's draft: never type into it.
 
-Address panes by pane ID (`%3`) or by exact name (`=session:=window`), never by window number: numbers shift when a window closes. For long reports, read the agent's transcript rather than the pane: Claude Code in `~/.claude/projects/<folder>/<session>.jsonl`, Codex in `~/.codex/sessions/`, opencode with `opencode session export <id>`.
+Address panes by pane ID (`%3`) or by exact name (`=session:=window`), never by window number: numbers shift when a window closes. For long reports, read the agent's transcript rather than the pane: Claude Code in `~/.claude/projects/<folder>/<session>.jsonl`, Codex in `~/.codex/sessions/`, Gemini CLI in `~/.gemini/tmp/*/chats/session-*.json`, opencode with `opencode session export <id>`.
 
 ## Event bus
 

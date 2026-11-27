@@ -68,6 +68,7 @@ per agent (installer, sign-in, launch, resume, how its state is read) is in
 | opencode (default) | `curl -fsSL https://opencode.ai/install \| bash` | `opencode --session <id>` | opencode's local server API |
 | Claude Code | `curl -fsSL https://claude.ai/install.sh \| bash` | `claude --resume <id>` | `~/.claude/sessions/<pid>.json` |
 | Codex | `curl -fsSL https://chatgpt.com/codex/install.sh \| sh` | `codex resume <id>` | Codex's session rollout file |
+| Gemini CLI | `npm install -g @google/gemini-cli` | `gemini --resume <id>` | `~/.gemini/tmp/*/chats/session-*.json` for id/time, pane for state |
 | custom | your own command | starts fresh (or `AGENT_RESUME`) | the tmux pane |
 
 Approval and permission prompts are read from the pane for every agent. The default is
@@ -100,7 +101,8 @@ downloaded at first login.
 **It comes back after a reboot.** `tmux-snapshot.timer` saves the layout of every tmux session
 each minute: windows, panes, folders, and what runs in them. At login `tmux-restore.service`
 rebuilds it before the desktop needs it. Agent panes come back with their own resume command
-(`claude --resume <id>`, `opencode --session <id>`, `codex resume <id>`), other programs with
+(`claude --resume <id>`, `opencode --session <id>`, `codex resume <id>`,
+`gemini --resume <id>`), other programs with
 the command that started them, everything else as a shell in the same folder.
 `tmux-restore --dry-run` shows what it would do; older layouts are in
 `~/.local/state/tmux-snapshot/history/`.
@@ -164,7 +166,7 @@ layout. Its window opens on workspace 9 (class `magi-agent-browser`), out of the
 Before the orchestrator starts, `magi-agent mcp` adds the
 [chrome-devtools MCP server](https://github.com/ChromeDevTools/chrome-devtools-mcp)
 (`npx -y chrome-devtools-mcp@latest --browserUrl=http://127.0.0.1:9222`) to the agent's own config
-(Claude Code, opencode or Codex), so agents drive this browser, where you are signed in, rather
+(Claude Code, opencode, Codex or Gemini CLI), so agents drive this browser, where you are signed in, rather
 than a blank headless one. Google Chrome isn't used because its licence doesn't allow
 redistribution; `MAGI_BROWSER=google-chrome` points `chrome-debug` at it if you install it yourself.
 
@@ -480,6 +482,7 @@ tests/             container-test.sh (podman, Fedora 44) and the VM test notes
   package. The [chrome-devtools MCP server](https://github.com/ChromeDevTools/chrome-devtools-mcp)
   (Apache-2.0) is not in the image; `npx` fetches it from npm the first time an agent uses it.
 - The orchestrator can use [Claude Code](https://code.claude.com),
-  [opencode](https://opencode.ai) or [Codex](https://github.com/openai/codex). mAGI does not
+  [opencode](https://opencode.ai), [Codex](https://github.com/openai/codex) or
+  [Gemini CLI](https://github.com/google-gemini/gemini-cli). mAGI does not
   include or redistribute any of them; each is installed from its publisher at first login and
   used under its publisher's terms.

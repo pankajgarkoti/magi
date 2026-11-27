@@ -17,7 +17,7 @@ with the agent's process alive is "idle". Idle time for pane-read agents is trac
 ~/.local/state/magi/agent/panes.json.
 
 Settings, ~/.config/magi/agent.conf (shell syntax):
-  AGENT=claude|opencode|codex|custom   the orchestrator's agent (default opencode)
+  AGENT=claude|opencode|codex|gemini|custom   the orchestrator's agent (default opencode)
   SUBAGENT=...                         agents the orchestrator starts (default: AGENT)
   AGENT_CMD='...'                      custom: the command that starts it
   AGENT_PROCESS=name                   custom: its process name (default: first word of AGENT_CMD)
@@ -126,6 +126,21 @@ def orchestrator_dir():
                 pass
             link.symlink_to(md)
     return str(ORCH_DIR)
+
+
+def orchestrator_gemini_dir():
+    """Gemini CLI reads GEMINI.md from its working folder, not AGENTS.md: keep both links to
+    MAGI's orchestrator instructions so the same folder works for every agent."""
+    d = orchestrator_dir()
+    md = orchestrator_md()
+    link = pathlib.Path(d) / "GEMINI.md"
+    if md and (not link.is_symlink() or os.readlink(link) != md):
+        try:
+            link.unlink()
+        except OSError:
+            pass
+        link.symlink_to(md)
+    return d
 
 
 def sh(*a, timeout=5):
@@ -578,6 +593,142 @@ class Codex(Agent):
         return [self.path() or "codex", "resume", *([session_id] if session_id else ["--last"]), *flags]
 
 
+class Gemini(Agent):
+    name, label, process, binary = "gemini", "Gemini CLI", ("gemini",), "gemini"
+    # official installer (npm, Node >= 20); MAGI_GEMINI_INSTALL_URL only points tests at a stub
+    install_cmd = ("if [ -n \"$MAGI_GEMINI_INSTALL_URL\" ]; then "
+                   "curl -fsSL \"$MAGI_GEMINI_INSTALL_URL\" | bash; "
+                   "else npm install -g @google/gemini-cli; fi")
+    install_shown = "npm install -g @google/gemini-cli"
+    install_note = "npm global bin (npm prefix)"
+    licence = "https://github.com/google-gemini/gemini-cli (Apache-2.0)"
+    state_source = "Gemini chat file (~/.gemini/tmp/*/chats/session-*.json) + tmux pane"
+    busy_re = r"esc to cancel|esc to interrupt|thinking|working|generating"
+    # "Esc to cancel" is the footer while working, not a prompt: don't copy that bit of ASK_COMMON.
+    ask_re = (r"Do you want|Allow execution|Allow this|Allow once|Allow always|Would you like to|"
+              r"Yes, allow once|No, suggest changes|Trust this folder|\[y/N\]|\(y/n\)|Press enter to")
+    KEEP_V = {"--model", "-m", "--approval-mode", "--include-directories", "-e", "--extensions"}
+    KEEP = {"--yolo", "-y", "--skip-trust", "--sandbox", "-s", "--debug", "-d"}
+
+    def signed_in(self):
+        # Gemini uses a Google sign-in, an API key in the environment, or a selected method in
+        # settings.json; it has no non-interactive `login status` like Claude/Codex.
+        if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
+            return True
+        try:
+            d = json.loads((HOME / ".gemini/settings.json").read_text())
+            if (d.get("security") or {}).get("auth", {}).get("selectedType"):
+                return True
+        except (OSError, ValueError, AttributeError):
+            pass
+        return (HOME / ".gemini/oauth_creds.json").exists()
+
+    def login_argv(self):
+        # `/auth` is a slash command inside Gemini CLI: open it and let the owner sign in there.
+        return [self.path() or "gemini"]
+
+    def oneshot_argv(self, prompt):
+        return [self.path() or "gemini", "-p", prompt]
+
+    def launch(self, role, prompt=None, resume=None):
+        argv = [self.path() or "gemini"]
+        if resume:
+            argv += ["--resume", resume]
+        if prompt:
+            argv.append(prompt)   # positional prompt, then continue interactively
+        return argv, orchestrator_gemini_dir() if role == "orchestrator" else None, {}
+
+    def _chat(self, pid):
+        """(session id, chat file, record) of the Gemini session this process started.
+        Gemini names files `session-<time>-<id8>.json` under ~/.gemini/tmp/<project>/chats/,
+        where <project> is the sha256 of the project path. A --resume id/prefix narrows the search."""
+        want = flag_value(proc_argv(pid), "--resume", "-r")
+        if want == "latest" or (want and want.isdigit()):
+            want = None   # pick the newest session in the folder instead
+        home = pathlib.Path(os.environ.get("GEMINI_HOME", HOME / ".gemini"))
+        try:
+            cwd = os.path.realpath(f"/proc/{pid}/cwd")
+        except OSError:
+            cwd = None
+        # Gemini hashes the project's path for the folder under ~/.gemini/tmp; match that so a
+        # worker in another folder never reports the orchestrator's session (or vice versa).
+        folder = hashlib.sha256(cwd.encode()).hexdigest() if cwd else None
+        chats = (home / "tmp" / folder / "chats") if folder else (home / "tmp")
+        start = proc_start(pid) - 5
+        best = None
+        for f in chats.glob("session-*.*" if folder else "*/chats/session-*.*"):
+            try:
+                st = f.stat()
+                if st.st_mtime < start:
+                    continue
+                rec = json.loads(f.read_text(errors="replace").splitlines()[0])
+            except (OSError, ValueError, IndexError):
+                continue
+            sid = rec.get("sessionId")
+            if not sid or rec.get("kind") == "subagent":
+                continue
+            if want and sid != want and not sid.startswith(want) and not re.search(
+                    r"-" + re.escape(want[:8]) + r"\.jsonl?$", f.name):
+                continue
+            key = (st.st_mtime, str(f))
+            if best is None or key > best[0]:
+                best = (key, sid, f, rec)
+        return (best[1], best[2], best[3]) if best else (want, None, None)
+
+    def session_id(self, pane, pid):
+        return self._chat(pid)[0]
+
+    def native_state(self, pane, pid):
+        # The chat file gives the session id and a stable "since"; the turn itself is only in the
+        # pane (a tool call in progress is not written until the turn ends), so read state there.
+        sid, f, rec = self._chat(pid)
+        if not f:
+            return None   # no chat yet (startup): use the pane and track idle from its screen
+        state = self.screen_state(sh("tmux", "capture-pane", "-p", "-t", pane))
+        since = None
+        if rec:
+            when = rec.get("lastUpdated") or rec.get("startTime")
+            if when:
+                try:
+                    since = calendar.timegm(time.strptime(when[:19], "%Y-%m-%dT%H:%M:%S"))
+                except ValueError:
+                    pass
+        if not since:
+            since = os.path.getmtime(f)
+        return {"state": state, "since": since, "session_id": sid, "cwd": None}
+
+    def saved_flags(self, argv):
+        return keep_flags(argv, self.KEEP_V, self.KEEP)
+
+    def resume_cmd(self, session_id, flags, cwd):
+        return [self.path() or "gemini", "--resume", session_id, *flags] if session_id else None
+
+    def screen_state(self, screen):
+        # read the bottom of the screen, not the conversation above it: a quoted "Allow once"
+        # in an earlier answer is not a live prompt. The working indicator is in the footer.
+        lines = [l for l in screen.splitlines() if l.strip()]
+        bottom = "\n".join(lines[-6:])
+        if re.search(self.ask_re, bottom, re.I):
+            return "asking"
+        if re.search(self.busy_re, "\n".join(lines[-3:]), re.I):
+            return "busy"
+        return "idle"
+
+    def draft(self, pane):
+        # the input line is the last line starting with "> "; dim/grey text after it is Gemini's
+        # placeholder, so it is not a draft. Never type over plain text the owner has typed.
+        for raw in reversed(sh("tmux", "capture-pane", "-p", "-e", "-t", pane).splitlines()):
+            plain = re.sub(r"\x1b\[[0-9;]*m", "", raw).rstrip()
+            m = re.match(r"^\s*>\s+(.*)$", plain)
+            if not m:
+                continue
+            after = raw.split(">", 1)[1] if ">" in raw else ""
+            if re.search(r"\x1b\[(2m|38;2;1[0-9]{2};1[0-9]{2};1[0-9]{2}m)", after):
+                return False
+            return bool(m.group(1).strip())
+        return False
+
+
 class Custom(Agent):
     name, label = "custom", "custom command"
     has_signin = False
@@ -617,7 +768,8 @@ class Custom(Agent):
         return None
 
 
-ADAPTERS = {"claude": Claude, "opencode": OpenCode, "codex": Codex, "custom": Custom}
+ADAPTERS = {"claude": Claude, "opencode": OpenCode, "codex": Codex,
+            "gemini": Gemini, "custom": Custom}
 
 
 def get(name=None, role="orchestrator", c=None):
@@ -631,7 +783,7 @@ def get(name=None, role="orchestrator", c=None):
 
 def all_adapters(c=None):
     c = conf() if c is None else c
-    out = [cls(c) for cls in (OpenCode, Claude, Codex)]
+    out = [cls(c) for cls in (OpenCode, Claude, Codex, Gemini)]
     if c.get("AGENT_CMD"):
         out.append(Custom(c))
     return out
@@ -893,6 +1045,19 @@ def ensure_mcp(name=None):
                 f.parent.mkdir(parents=True, exist_ok=True)
                 with f.open("a") as fh:
                     fh.write(f"\n[mcp_servers.{MCP_NAME}]\ncommand = \"{MCP_ARGV[0]}\"\nargs = {json.dumps(MCP_ARGV[1:])}\n")
+                return f"added to {f}"
+        elif a.name == "gemini":
+            f = HOME / ".gemini/settings.json"
+            try:
+                d = json.loads(f.read_text()) if f.exists() else {}
+            except ValueError:
+                d = {}
+            servers = d.get("mcpServers", {})
+            if MCP_NAME not in servers:
+                servers[MCP_NAME] = {"command": MCP_ARGV[0], "args": MCP_ARGV[1:]}
+                d["mcpServers"] = servers
+                f.parent.mkdir(parents=True, exist_ok=True)
+                f.write_text(json.dumps(d, indent=2) + "\n")
                 return f"added to {f}"
     except (OSError, ValueError, subprocess.TimeoutExpired) as e:
         return f"not configured: {e}"
