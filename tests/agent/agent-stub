@@ -2,26 +2,30 @@
 """TEST ONLY: a stand-in for a terminal agent, so the MAGI agent layer can be tested without
 an account. Never part of the image. It mimics the interface MAGI relies on, per agent:
 
-  installed as     claude            opencode                   codex             anything else
-  sign-in          auth status/login (none needed)              login status/login  (none)
-  resume           --resume ID       --session ID (fresh: id    resume ID         (starts fresh)
+  installed as     claude            opencode                   codex        gemini       anything else
+  sign-in          auth status/login (none needed)              login status/  (none)      (none)
+                                                                login
+  resume           --resume ID       --session ID (fresh: id    resume ID     --resume ID  (starts fresh)
                                      in opencode.db)
-  own state        ~/.claude/        server API (service.json,  thread row in     -
-                   sessions/<pid>    /api/session, permissions) ~/.codex/state_5 +
-                                                                rollout events
-  working screen   esc to interrupt  esc interrupt              esc to interrupt  working...
-  asking screen    Do you want to    Permission required        Would you like to [y/N]
+  own state        ~/.claude/        server API (service.json,  thread row in  chat file in  -
+                   sessions/<pid>    /api/session, permissions) ~/.codex/     ~/.gemini/
+                                                                state_5 +     tmp/*/chats/
+                                                                rollout
+  working screen   esc to interrupt  esc interrupt              esc to        esc to       working...
+                                                                interrupt     cancel
+  asking screen    Do you want to    Permission required        Would you     Allow        [y/N]
+                                                                like to       execution?
 
 Typed lines: "work N" works for N seconds, "ask" shows a permission prompt until "y" or "n",
 anything else is answered after 1 s. Every start and line is logged to ~/.magi-stub/<kind>.log.
   agent-stub serve      (opencode only) the stub server behind service.json
 """
-import json, os, secrets, sqlite3, subprocess, sys, threading, time, uuid
+import hashlib, json, os, secrets, sqlite3, subprocess, sys, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HOME = os.path.expanduser("~")
 KIND = os.environ.get("STUB_KIND") or os.path.basename(sys.argv[0])
-KIND = KIND if KIND in ("claude", "opencode", "codex") else "custom"
+KIND = KIND if KIND in ("claude", "opencode", "codex", "gemini") else "custom"
 LOGDIR = os.path.join(HOME, ".magi-stub")
 os.makedirs(LOGDIR, exist_ok=True)
 LOG = os.path.join(LOGDIR, f"{KIND}.log")
@@ -150,6 +154,9 @@ elif KIND == "opencode":
 elif KIND == "codex":
     resumed = a[:1] == ["resume"]
     sid = a[1] if resumed and len(a) > 1 and not a[1].startswith("-") else str(uuid.uuid4())
+elif KIND == "gemini":
+    resumed = "--resume" in a
+    sid = a[a.index("--resume") + 1] if resumed and a.index("--resume") + 1 < len(a) else str(uuid.uuid4())
 else:
     sid = None
 agents_md = os.path.join(os.getcwd(), "AGENTS.md")
@@ -182,6 +189,13 @@ if KIND == "codex":
         row = con.execute("select rollout_path from threads where id = ?", (sid,)).fetchone()
         ROLLOUT = row[0] if row else ROLLOUT
     con.commit(); con.close()
+if KIND == "gemini":
+    gh = os.environ.get("GEMINI_HOME", os.path.join(HOME, ".gemini"))
+    proj = hashlib.sha256(os.getcwd().encode()).hexdigest()
+    CHATS = os.path.join(gh, "tmp", proj, "chats")
+    CHAT = os.path.join(CHATS, "session-%s-%s.json" % (time.strftime("%Y%m%d%H%M%S"), sid[:8]))
+    gemini_started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    os.makedirs(CHATS, exist_ok=True)
 oc_time = {"created": int(time.time() * 1000)}
 
 
@@ -208,6 +222,12 @@ def status(st):
             oc_time[st] = now
         json.dump({"id": sid, "cwd": os.getcwd(), "time": oc_time, "asking": st == "asking", "running": st != "idle"},
                   open(os.path.join(OC_DIR, sid + ".json"), "w"))
+    elif KIND == "gemini":
+        # Gemini's chat record: session id + timestamps (state itself is read from the pane)
+        json.dump({"sessionId": sid, "startTime": gemini_started,
+                   "lastUpdated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                   "kind": "interactive", "hasResumableContent": True,
+                   "messages": [{"type": "user", "content": "stub"}]}, open(CHAT, "w"))
 
 
 SCREEN = {
@@ -217,6 +237,8 @@ SCREEN = {
                  "ask": "△ Permission required\n  $ rm -rf build\n  Allow once   Allow always   Reject   ⇆ select  enter confirm"},
     "codex":    {"prompt": "\n› ", "busy": "• Working (3s • esc to interrupt)",
                  "ask": "Would you like to run the following command?\n  $ rm -rf build\n› 1. Yes, proceed (y)\n  2. No (esc)"},
+    "gemini":   {"prompt": "\n> ", "busy": "✦ Thinking… (esc to cancel)",
+                 "ask": "Allow execution of this command?\n  rm -rf build\n  1. Yes, allow once\n  2. No, suggest changes (esc)"},
     "custom":   {"prompt": "\n> ", "busy": "working...", "ask": "Run rm -rf build? [y/N]"},
 }[KIND]
 
