@@ -8,6 +8,15 @@
 # Security: the port is bound to 127.0.0.1 only, so the network can't reach it, but any program
 # on this machine can drive this browser, including every site you are signed in to in it.
 #
+# --password-store=basic: the agent browser starts unattended at boot, before any
+# keyring unlock (and the distro image uses GDM autologin, so the login keyring is
+# never unlocked). With the default gnome-libsecret store, Chromium's cookie-crypto
+# init waits on a keyring prompt nobody can answer, and EVERY http(s) page load then
+# stalls forever (URLRequest starts but its transaction never begins; chrome:// and
+# CDP keep working, which makes it look like a network/sandbox problem). The basic
+# store keeps cookies/logins in the 0700 agent profile without a keyring round trip.
+# Do NOT "fix" this with --no-sandbox: the sandbox was never the problem.
+#
 #   chrome-debug [CHROMIUM ARGS...]     start it, or say that it is already running
 # The window class is magi-agent-browser; mAGI's Hyprland config puts it on workspace 9.
 # Environment: MAGI_BROWSER (binary; default chromium-browser, then chromium, google-chrome),
@@ -67,4 +76,5 @@ if [ ! -d "$dir" ]; then
 fi
 
 exec "$bin" --ozone-platform-hint=auto --remote-debugging-port="$port" --remote-debugging-address=127.0.0.1 \
-  --user-data-dir="$dir" --class=magi-agent-browser --no-first-run --no-default-browser-check "$@"
+  --user-data-dir="$dir" --class=magi-agent-browser --no-first-run --no-default-browser-check \
+  --password-store=basic "$@"
