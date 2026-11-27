@@ -175,6 +175,8 @@ scripts) and report through a CDP binding, so browser-bus opens no port and the 
 it. Each probe has an allow-list of bus sources and a rate limit (30 events, then 15 a minute).
 The default probe, `unread-titles`, reports when the unread count in a tab's title goes up, with
 the site and the number only. Examples ship in `/usr/share/magi/agent/browser-bus/examples`:
+`unread-titles` (any tab), `page-title` (local dev servers), `whatsapp-self` (notes you send
+yourself), `github-notifications` (new unread GitHub notifications and their titles).
 
 ```bash
 browser-bus status                  # connected?, tabs with probes, recent events
