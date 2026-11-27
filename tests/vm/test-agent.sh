@@ -144,7 +144,7 @@ voice)
 offline)
   . /usr/share/magi/agent/bin/magi-voice-env
   pactl load-module module-null-sink sink_name=magi_test >/dev/null 2>&1
-  check "network is down (NetworkManager connectivity)" bash -c '[ "$(nmcli -t networking connectivity)" != full ]'
+  check "network is down (NetworkManager connectivity)" waitfor 30 bash -c '[ "$(nmcli -t networking connectivity)" != full ]'
   check "bar status: OFFLINE" waitfor 15 bash -c '[ "$(magi-agent status --json | python3 -c "import json,sys;print(json.load(sys.stdin)[\"orchestrator\"])")" = OFFLINE ]'
   check "console session still up" tmux has-session -t =magi
   [ "$(jget listener)" = LISTEN ] && pass "listener still listening offline" || fail "listener: $(jget listener)"
