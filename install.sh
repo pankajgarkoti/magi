@@ -358,6 +358,7 @@ else
   if [ "$DRY" = 1 ]; then
     printf '  %s[dry-run]%s write IMAGE_VERSION (%s) to /usr/share/magi/IMAGE_VERSION\n' "$Y" "$R" "$ver"
   else
+    mkdir -p "$STATE"
     printf '%s\n' "$ver" > "$STATE/IMAGE_VERSION.new"
     run "${ASUDO[@]}" cp -f "$STATE/IMAGE_VERSION.new" /usr/share/magi/IMAGE_VERSION
     rm -f "$STATE/IMAGE_VERSION.new"
