@@ -21,6 +21,8 @@ info() { printf 'INFO  %s\n' "$*"; }
 check() { local what=$1; shift; if "$@" >/dev/null 2>&1; then pass "$what"; else fail "$what"; fi; }
 waitfor() { local n=$1; shift; for _ in $(seq 1 "$n"); do "$@" >/dev/null 2>&1 && return 0; sleep 1; done; return 1; }
 clients_main() { tmux list-clients -t =main -F '#{client_pid}' 2>/dev/null | grep -c .; }
+mswin() { tmux list-windows -a -F '#{window_id} #{window_name}' 2>/dev/null | awk '$2=="magi-status"{print $1; exit}'; }
+export -f mswin
 alacritty_on() { hyprctl -j clients | python3 -c "import json,sys; sys.exit(0 if any(c['class']=='Alacritty' and c['workspace']['name']=='$1' for c in json.load(sys.stdin)) else 1)"; }
 note() { echo ~/notes/Journal/$(date +%Y/%m/%Y-%m-%d).md; }
 
@@ -41,7 +43,7 @@ if [ "${1:-}" = reboot ]; then
   check "  ... running its program again (tail)" waitfor 20 bash -c "pgrep -P \$(tmux list-panes -t =main:=work -F '#{pane_pid}') -x tail"
   check "window 'scratch' restored in main as a shell" bash -c "tmux list-windows -t =main -F '#W' | grep -qx scratch"
   check "the open thread survived the reboot" bash -c "orch thread scan | grep -q 'session test thread'"
-  check "the status panel window came back running the panel" waitfor 20 bash -c "tmux capture-pane -p -t magi-status | grep -q 'mAGI STATUS'"
+  check "the status panel window came back running the panel" waitfor 20 bash -c "tmux capture-pane -p -t \"\$(mswin)\" | grep -q 'mAGI STATUS'"
   info "restore log: $(tail -6 ~/.local/state/tmux-snapshot/restore.log | tr '\n' ' ' | cut -c1-300)"
   echo; [ $fails = 0 ] && echo "RESULT: PASS" || echo "RESULT: FAIL ($fails)"
   exit $fails
@@ -97,11 +99,11 @@ active_ok() { hyprctl -j activewindow | python3 -c "import json,sys; c=json.load
 panel_selected() { tmux list-windows -a -F '#{window_name} #{window_active} #{session_attached}' | grep -q '^magi-status 1 [1-9]'; }
 check "magi-status --once prints a frame (SYSTEM, mAGI version)" bash -c "magi-status --once --no-color | grep -q \"mAGI .*$(cat /usr/share/magi/IMAGE_VERSION)\""
 check "ALT + M is bound to magi-status-show" bash -c "hyprctl -j binds | python3 -c \"import json,sys; sys.exit(0 if any(b['key'].upper()=='M' and b['modmask']==8 for b in json.load(sys.stdin)) else 1)\""
-tmux kill-window -t magi-status 2>/dev/null
+tmux kill-window -t "$(mswin)" 2>/dev/null
 hyprctl dispatch 'hl.dsp.focus({ workspace = 4 })' >/dev/null
 hyprctl dispatch 'hl.dsp.exec_cmd("magi-status-show")' >/dev/null
 check "ALT + M created the tmux window magi-status" waitfor 10 bash -c "tmux list-windows -a -F '#W' | grep -qx magi-status"
-check "  ... running the panel" waitfor 10 bash -c "tmux capture-pane -p -t magi-status | grep -q 'mAGI STATUS'"
+check "  ... running the panel" waitfor 10 bash -c "tmux capture-pane -p -t \"\$(mswin)\" | grep -q 'mAGI STATUS'"
 check "  ... selected, in a session a terminal shows" waitfor 10 panel_selected
 check "  ... and that terminal has focus (left workspace 4)" waitfor 10 active_ok
 info "panel window: $(tmux list-windows -a -F '#S:#I #W' | grep magi-status) · focus: $(hyprctl -j activewindow | python3 -c "import json,sys; c=json.load(sys.stdin); print(c.get('class'), c.get('workspace',{}).get('name'))")"
